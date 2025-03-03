@@ -1,0 +1,12 @@
+[package]
+name = "stm32"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+autopilot ={ path = "../../autopilot" }
+
+[features]
+
+micoair743v2 = []
+matekf405te = []

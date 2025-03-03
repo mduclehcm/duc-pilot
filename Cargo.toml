@@ -1,3 +1,3 @@
 [workspace]
-members = ["board/sitl", "autopilot"]
+members = ["board/sitl", "autopilot", "board/stm32"]
 resolver = "2"

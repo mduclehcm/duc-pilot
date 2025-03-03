@@ -1,5 +1,4 @@
-use autopilot::Resources;
-
+#[derive(Default)]
 pub struct FlightControllerBoard {}
 
 impl FlightControllerBoard {
@@ -10,10 +9,10 @@ impl FlightControllerBoard {
 
 impl autopilot::Board for FlightControllerBoard {
     fn get_name(&self) -> &str {
-        "SITL"
+        "MicoAir743v2"
     }
 
-    fn split_resources(self) -> Resources {
-        unimplemented!()
+    fn split_resources(self) -> autopilot::Resources {
+        todo!()
     }
 }
