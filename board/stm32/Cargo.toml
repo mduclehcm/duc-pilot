@@ -10,3 +10,5 @@ autopilot ={ path = "../../autopilot" }
 
 micoair743v2 = []
 matekf405te = []
+
+default = ["micoair743v2"]
