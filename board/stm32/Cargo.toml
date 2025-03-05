@@ -5,10 +5,14 @@ edition = "2021"
 
 [dependencies]
 autopilot ={ path = "../../autopilot" }
+driver = { path = "../../libraries/driver", features = ["stm32"] }
+embassy-stm32 = { version = "0.1.0", features = ["stm32f405", "time-driver-any", "defmt", "rt"] }
+embassy-time = "0.1.0"
+embassy-executor = { version = "0.3.0", features = ["task-pool-any", "arch-cortex-m", "executor-thread", "defmt"] }
 
 [features]
-
 micoair743v2 = []
 matekf405te = []
+gps = []
 
 default = ["micoair743v2"]

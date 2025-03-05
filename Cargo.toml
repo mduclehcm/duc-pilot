@@ -5,6 +5,6 @@ members = [
     "board/stm32",
     "libraries/hal",
     "libraries/pid",
-    "libraries/ahrs",
+    "libraries/ahrs", "libraries/driver",
 ]
 resolver = "2"

@@ -1,7 +1,6 @@
 mod attitude;
 mod board;
 mod control;
-mod hal;
 mod imu;
 mod mixer;
 mod pid;
