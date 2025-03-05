@@ -7,6 +7,21 @@ use std::fmt;
 /// The number of model filters used in the IMM
 pub const NUM_MODELS: usize = 4;
 
+/// Default model transition probability to stay in the same model
+const DEFAULT_STAY_PROBABILITY: f32 = 0.85;
+
+/// Minimum allowed probability value to prevent numerical issues
+const MINIMUM_PROBABILITY_THRESHOLD: f32 = 0.001;
+
+/// Numerical stability threshold for near-zero values
+const NUMERICAL_STABILITY_THRESHOLD: f32 = 1e-10;
+
+/// Minimum allowed value for minimum probability
+const MIN_ALLOWED_PROBABILITY: f32 = 0.0;
+
+/// Maximum allowed value for minimum probability
+const MAX_ALLOWED_PROBABILITY: f32 = 0.5;
+
 /// Standard Interacting Multiple Model (IMM) filter implementation
 /// This implementation follows the standard IMM algorithm:
 /// 1. Interaction/Mixing: Compute mixed initial conditions for each filter
@@ -42,17 +57,14 @@ impl Imm {
         // Create model filters
         let model_filters = create_model_filters(config)?;
         
-        // Initialize model probabilities
+        // Initialize model probabilities with the provided weights or defaults
         let mut model_probs = [1.0 / (NUM_MODELS as f32); NUM_MODELS]; // Default to equal probabilities
         
-        // If model weights are provided in config, use them
-        if config.model_weights.len() >= NUM_MODELS {
-            // Normalize the provided weights
-            let sum: f32 = config.model_weights.iter().take(NUM_MODELS).sum();
-            if sum > 0.0 {
-                for i in 0..NUM_MODELS {
-                    model_probs[i] = config.model_weights[i] / sum;
-                }
+        // Use the provided model weights from config
+        let sum: f32 = config.model_weights.iter().sum();
+        if sum > 0.0 {
+            for i in 0..NUM_MODELS {
+                model_probs[i] = config.model_weights[i] / sum;
             }
         }
         
@@ -61,7 +73,7 @@ impl Imm {
         let mut transition_matrix = [[0.0; NUM_MODELS]; NUM_MODELS];
         
         // Default: high probability of staying in same model, low probability of transition
-        let stay_prob = 0.85;
+        let stay_prob = DEFAULT_STAY_PROBABILITY;
         let transition_prob = (1.0 - stay_prob) / (NUM_MODELS as f32 - 1.0);
         
         for i in 0..NUM_MODELS {
@@ -89,7 +101,7 @@ impl Imm {
             mixing_probs,
             mixed_states,
             initialized: false,
-            min_probability: 0.001, // Default minimum probability
+            min_probability: MINIMUM_PROBABILITY_THRESHOLD, // Default minimum probability
         })
     }
     
@@ -126,7 +138,7 @@ impl Imm {
             }
             
             // Avoid division by zero
-            if c_j < 1e-10 {
+            if c_j < NUMERICAL_STABILITY_THRESHOLD {
                 // If normalization is near zero, set uniform mixing probabilities
                 for i in 0..NUM_MODELS {
                     self.mixing_probs[i][j] = 1.0 / (NUM_MODELS as f32);
@@ -273,16 +285,16 @@ impl Imm {
     }
     
     /// Update model probabilities based on measurement likelihoods
-    fn update_model_probabilities(&mut self, innovations: &Vec<na::Vector6<f32>>, 
-                                innovation_covariances: &Vec<na::Matrix6<f32>>) -> AhrsResult<()> {
+    fn update_model_probabilities(&mut self, innovations: &[na::Vector6<f32>; NUM_MODELS], 
+                                innovation_covariances: &[na::Matrix6<f32>; NUM_MODELS]) -> AhrsResult<()> {
         if !self.initialized {
             return Err(AhrsError::InitializationError(
                 "IMM filter not initialized".to_string(),
             ));
         }
         
-        // Calculate likelihood for each model
-        let mut likelihoods = vec![0.0; NUM_MODELS];
+        // Calculate likelihood for each model using fixed-size array
+        let mut likelihoods = [0.0; NUM_MODELS];
         for j in 0..NUM_MODELS {
             likelihoods[j] = self.model_filters[j].likelihood(&innovations[j], &innovation_covariances[j]);
         }
@@ -295,7 +307,7 @@ impl Imm {
         }
         
         // Normalize probabilities
-        if sum < 1e-10 {
+        if sum < NUMERICAL_STABILITY_THRESHOLD {
             // If all probabilities are near zero, reset to equal probabilities
             for j in 0..NUM_MODELS {
                 self.model_probs[j] = 1.0 / (NUM_MODELS as f32);
@@ -351,14 +363,14 @@ impl Imm {
             ));
         }
         
-        // Collect innovations from all models
-        let mut innovations = Vec::with_capacity(NUM_MODELS);
-        let mut innovation_covariances = Vec::with_capacity(NUM_MODELS);
+        // Use fixed-size arrays instead of Vec
+        let mut innovations = [na::Vector6::zeros(); NUM_MODELS];
+        let mut innovation_covariances = [na::Matrix6::zeros(); NUM_MODELS];
         
-        for filter in &self.model_filters {
-            let (innovation, innovation_cov) = filter.gps_innovation(gps_data);
-            innovations.push(innovation);
-            innovation_covariances.push(innovation_cov);
+        for i in 0..NUM_MODELS {
+            let (innovation, innovation_cov) = self.model_filters[i].gps_innovation(gps_data);
+            innovations[i] = innovation;
+            innovation_covariances[i] = innovation_cov;
         }
         
         // Update each model
@@ -543,7 +555,25 @@ impl Imm {
     }
     
     /// Set custom transition matrix
-    pub fn set_transition_matrix(&mut self, matrix: Vec<Vec<f32>>) -> AhrsResult<()> {
+    pub fn set_transition_matrix(&mut self, matrix: [[f32; NUM_MODELS]; NUM_MODELS]) -> AhrsResult<()> {
+        // Validate each row sums to 1.0
+        for row in &matrix {
+            let sum: f32 = row.iter().sum();
+            if (sum - 1.0).abs() > NUMERICAL_STABILITY_THRESHOLD {
+                return Err(AhrsError::InitializationError(
+                    format!("Transition matrix row does not sum to 1.0: {}", sum)
+                ));
+            }
+        }
+        
+        // Copy values from the input array
+        self.transition_matrix = matrix;
+        
+        Ok(())
+    }
+    
+    /// Set custom transition matrix from slices
+    pub fn set_transition_matrix_from_slices(&mut self, matrix: &[&[f32]]) -> AhrsResult<()> {
         // Validate matrix dimensions
         if matrix.len() != NUM_MODELS {
             return Err(AhrsError::InitializationError(
@@ -551,7 +581,7 @@ impl Imm {
             ));
         }
         
-        for row in &matrix {
+        for row in matrix {
             if row.len() != NUM_MODELS {
                 return Err(AhrsError::InitializationError(
                     format!("Invalid transition matrix size: expected {} columns", NUM_MODELS)
@@ -560,16 +590,16 @@ impl Imm {
         }
         
         // Validate each row sums to 1.0
-        for row in &matrix {
+        for row in matrix {
             let sum: f32 = row.iter().sum();
-            if (sum - 1.0).abs() > 1e-5 {
+            if (sum - 1.0).abs() > NUMERICAL_STABILITY_THRESHOLD {
                 return Err(AhrsError::InitializationError(
                     format!("Transition matrix row does not sum to 1.0: {}", sum)
                 ));
             }
         }
         
-        // Copy values from the Vec<Vec<f32>> to our fixed-size array
+        // Copy values from the slices
         for i in 0..NUM_MODELS {
             for j in 0..NUM_MODELS {
                 self.transition_matrix[i][j] = matrix[i][j];
@@ -581,9 +611,9 @@ impl Imm {
     
     /// Set minimum allowed model probability
     pub fn set_min_probability(&mut self, min_prob: f32) -> AhrsResult<()> {
-        if min_prob < 0.0 || min_prob > 0.5 {
+        if min_prob < MIN_ALLOWED_PROBABILITY || min_prob > MAX_ALLOWED_PROBABILITY {
             return Err(AhrsError::InitializationError(
-                format!("Invalid minimum probability: {}, should be between 0 and 0.5", min_prob)
+                format!("Invalid minimum probability: {}, should be between {} and {}", min_prob, MIN_ALLOWED_PROBABILITY, MAX_ALLOWED_PROBABILITY)
             ));
         }
         

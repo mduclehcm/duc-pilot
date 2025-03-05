@@ -64,6 +64,21 @@ pub mod models;
 pub mod sensors;
 pub mod utils;
 
+/// Default window size for rate calculation (number of samples to keep)
+pub const DEFAULT_RATE_WINDOW_SIZE: usize = 10;
+
+/// Default update rate for the AHRS in Hz
+pub const DEFAULT_UPDATE_RATE: f32 = 100.0;
+
+/// Default position covariance scaling factor
+pub const DEFAULT_POSITION_COVARIANCE: f32 = 10.0;
+
+/// Default velocity covariance scaling factor
+pub const DEFAULT_VELOCITY_COVARIANCE: f32 = 1.0;
+
+/// Default attitude covariance scaling factor
+pub const DEFAULT_ATTITUDE_COVARIANCE: f32 = 0.1;
+
 /// Errors that can occur during AHRS operation
 #[derive(Error, Debug)]
 pub enum AhrsError {
@@ -169,9 +184,9 @@ impl Default for StateVector {
             velocity: na::Vector3::zeros(),
             accel_bias: na::Vector3::zeros(),
             gyro_bias: na::Vector3::zeros(),
-            position_covariance: na::Matrix3::identity() * 10.0,
-            velocity_covariance: na::Matrix3::identity() * 1.0,
-            attitude_covariance: na::Matrix3::identity() * 0.1,
+            position_covariance: na::Matrix3::identity() * DEFAULT_POSITION_COVARIANCE,
+            velocity_covariance: na::Matrix3::identity() * DEFAULT_VELOCITY_COVARIANCE,
+            attitude_covariance: na::Matrix3::identity() * DEFAULT_ATTITUDE_COVARIANCE,
         }
     }
 }
@@ -237,13 +252,24 @@ pub struct AhrsConfig {
     pub sensor_noise: SensorNoise,
 
     /// IMM model weights
-    /// Vector of weights for each model in the IMM algorithm:
+    /// Array of weights for each model in the IMM algorithm:
     /// [0] = Constant Velocity Model
     /// [1] = Constant Acceleration Model
     /// [2] = Coordinated Turn Model
     /// [3] = Energy-Based Model (for fixed-wing aircraft pitch-altitude-speed modeling)
-    /// If fewer than NUM_MODELS weights are provided, defaults to equal weights (1/NUM_MODELS each)
-    pub model_weights: Vec<f32>,
+    pub model_weights: [f32; NUM_MODELS],
+}
+
+impl Default for AhrsConfig {
+    fn default() -> Self {
+        Self {
+            update_rate: DEFAULT_UPDATE_RATE,
+            process_noise: ProcessNoise::default(),
+            sensor_noise: SensorNoise::default(),
+            // Equal weights for all models
+            model_weights: [1.0 / (NUM_MODELS as f32); NUM_MODELS],
+        }
+    }
 }
 
 /// Process noise configuration
@@ -255,6 +281,17 @@ pub struct ProcessNoise {
     pub gyro_bias_noise: f32,
 }
 
+impl Default for ProcessNoise {
+    fn default() -> Self {
+        Self {
+            accel_noise: 0.01,
+            gyro_noise: 0.001,
+            accel_bias_noise: 0.0001,
+            gyro_bias_noise: 0.00001,
+        }
+    }
+}
+
 /// Sensor noise configuration
 #[derive(Debug, Clone)]
 pub struct SensorNoise {
@@ -264,6 +301,19 @@ pub struct SensorNoise {
     pub baro_noise: f32,
     pub gps_position_noise: f32,
     pub gps_velocity_noise: f32,
+}
+
+impl Default for SensorNoise {
+    fn default() -> Self {
+        Self {
+            accel_noise: 0.05,
+            gyro_noise: 0.01,
+            mag_noise: 0.1,
+            baro_noise: 0.5,
+            gps_position_noise: 2.0,
+            gps_velocity_noise: 0.2,
+        }
+    }
 }
 
 /// Main AHRS implementation with EKF and IMM pattern
@@ -293,16 +343,19 @@ pub struct Ahrs {
     last_baro_update: Option<f32>,
 
     /// Recent IMU update intervals for rate calculation (seconds)
-    imu_update_intervals: Vec<f32>,
+    imu_update_intervals: [f32; DEFAULT_RATE_WINDOW_SIZE],
+    /// Number of valid IMU intervals in the array
+    imu_intervals_count: usize,
 
     /// Recent GPS update intervals for rate calculation (seconds)
-    gps_update_intervals: Vec<f32>,
+    gps_update_intervals: [f32; DEFAULT_RATE_WINDOW_SIZE],
+    /// Number of valid GPS intervals in the array
+    gps_intervals_count: usize,
 
     /// Recent barometer update intervals for rate calculation (seconds)
-    baro_update_intervals: Vec<f32>,
-
-    /// Number of intervals to keep for rate calculation
-    rate_window_size: usize,
+    baro_update_intervals: [f32; DEFAULT_RATE_WINDOW_SIZE],
+    /// Number of valid barometer intervals in the array
+    baro_intervals_count: usize,
 }
 
 impl Ahrs {
@@ -313,9 +366,6 @@ impl Ahrs {
         // Initialize the IMM - it will internally create and manage the individual EKF instances
         let imm = imm::Imm::new(&config)?;
 
-        // Default window size for rate calculation
-        const DEFAULT_RATE_WINDOW_SIZE: usize = 10;
-
         Ok(Self {
             state,
             config,
@@ -325,10 +375,12 @@ impl Ahrs {
             last_imu_update: None,
             last_gps_update: None,
             last_baro_update: None,
-            imu_update_intervals: Vec::with_capacity(DEFAULT_RATE_WINDOW_SIZE),
-            gps_update_intervals: Vec::with_capacity(DEFAULT_RATE_WINDOW_SIZE),
-            baro_update_intervals: Vec::with_capacity(DEFAULT_RATE_WINDOW_SIZE),
-            rate_window_size: DEFAULT_RATE_WINDOW_SIZE,
+            imu_update_intervals: [0.0; DEFAULT_RATE_WINDOW_SIZE],
+            imu_intervals_count: 0,
+            gps_update_intervals: [0.0; DEFAULT_RATE_WINDOW_SIZE],
+            gps_intervals_count: 0,
+            baro_update_intervals: [0.0; DEFAULT_RATE_WINDOW_SIZE],
+            baro_intervals_count: 0,
         })
     }
 
@@ -359,10 +411,10 @@ impl Ahrs {
             let interval = timestamp - last_imu_time;
             if interval > 0.0 && !interval.is_nan() && !interval.is_infinite() {
                 // Add interval to the tracking array
-                self.imu_update_intervals.push(interval);
+                self.imu_update_intervals[self.imu_intervals_count] = interval;
                 // Keep only the window size number of intervals
-                if self.imu_update_intervals.len() > self.rate_window_size {
-                    self.imu_update_intervals.remove(0);
+                if self.imu_intervals_count < DEFAULT_RATE_WINDOW_SIZE - 1 {
+                    self.imu_intervals_count += 1;
                 }
             }
         }
@@ -406,10 +458,10 @@ impl Ahrs {
             let interval = timestamp - last_gps_time;
             if interval > 0.0 && !interval.is_nan() && !interval.is_infinite() {
                 // Add interval to the tracking array
-                self.gps_update_intervals.push(interval);
+                self.gps_update_intervals[self.gps_intervals_count] = interval;
                 // Keep only the window size number of intervals
-                if self.gps_update_intervals.len() > self.rate_window_size {
-                    self.gps_update_intervals.remove(0);
+                if self.gps_intervals_count < DEFAULT_RATE_WINDOW_SIZE - 1 {
+                    self.gps_intervals_count += 1;
                 }
             }
         }
@@ -441,10 +493,10 @@ impl Ahrs {
             let interval = timestamp - last_baro_time;
             if interval > 0.0 && !interval.is_nan() && !interval.is_infinite() {
                 // Add interval to the tracking array
-                self.baro_update_intervals.push(interval);
+                self.baro_update_intervals[self.baro_intervals_count] = interval;
                 // Keep only the window size number of intervals
-                if self.baro_update_intervals.len() > self.rate_window_size {
-                    self.baro_update_intervals.remove(0);
+                if self.baro_intervals_count < DEFAULT_RATE_WINDOW_SIZE - 1 {
+                    self.baro_intervals_count += 1;
                 }
             }
         }
@@ -460,7 +512,7 @@ impl Ahrs {
     /// (defined by `rate_window_size`). Returns `None` if no updates have been received
     /// or if only a single update has been received.
     pub fn imu_update_rate(&self) -> Option<f32> {
-        self.calculate_update_rate(&self.imu_update_intervals)
+        self.calculate_update_rate(&self.imu_update_intervals, &self.imu_intervals_count)
     }
 
     /// Get the current GPS update rate in Hz
@@ -469,7 +521,7 @@ impl Ahrs {
     /// (defined by `rate_window_size`). Returns `None` if no updates have been received
     /// or if only a single update has been received.
     pub fn gps_update_rate(&self) -> Option<f32> {
-        self.calculate_update_rate(&self.gps_update_intervals)
+        self.calculate_update_rate(&self.gps_update_intervals, &self.gps_intervals_count)
     }
 
     /// Get the current barometer update rate in Hz
@@ -478,7 +530,7 @@ impl Ahrs {
     /// (defined by `rate_window_size`). Returns `None` if no updates have been received
     /// or if only a single update has been received.
     pub fn baro_update_rate(&self) -> Option<f32> {
-        self.calculate_update_rate(&self.baro_update_intervals)
+        self.calculate_update_rate(&self.baro_update_intervals, &self.baro_intervals_count)
     }
 
     /// Get a summary of all sensor update rates and timing information
@@ -505,14 +557,14 @@ impl Ahrs {
     }
 
     /// Calculate the update rate from a list of intervals
-    fn calculate_update_rate(&self, intervals: &[f32]) -> Option<f32> {
-        if intervals.is_empty() {
+    fn calculate_update_rate(&self, intervals: &[f32], count: &usize) -> Option<f32> {
+        if *count == 0 {
             return None;
         }
 
         // Calculate average interval
-        let sum: f32 = intervals.iter().sum();
-        let avg_interval = sum / intervals.len() as f32;
+        let sum: f32 = intervals.iter().take(*count).sum();
+        let avg_interval = sum / *count as f32;
 
         // Convert to rate (Hz)
         if avg_interval > 0.0 {
