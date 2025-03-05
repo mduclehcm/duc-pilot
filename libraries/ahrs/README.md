@@ -1,6 +1,92 @@
-# AHRS: Attitude and Heading Reference System
+# AHRS - Attitude and Heading Reference System
 
-A Rust library implementing advanced algorithms for attitude estimation and navigation with sensor fusion.
+The AHRS module provides a robust state estimation solution for UAVs, integrating data from multiple sensors including IMU, GPS, and barometric altimeter.
+
+## Features
+
+- Advanced sensor fusion with EKF (Extended Kalman Filter)
+- Interactive Multiple Model (IMM) pattern for adaptive estimation
+- High-precision state estimation for attitude, velocity, and position
+- Operation in GPS-denied environments
+- Low-latency output for real-time control systems
+- Comprehensive error handling system
+
+## Error Handling System
+
+The AHRS crate implements a comprehensive error handling system designed to provide detailed, contextual error information. This helps with debugging and allows robust error handling in applications using the crate.
+
+### Error Types
+
+The primary error type is `AhrsError`, which includes variants for different error categories:
+
+- `InitializationError`: Errors during initialization of AHRS components
+- `SensorError`: Errors from sensor measurements or processing
+- `FilterDivergence`: Filter divergence detection (estimates becoming unstable)
+- `InvalidState`: State containing NaN or infinite values
+- `TimingError`: Timing-related errors (negative or invalid time deltas)
+- `NumericalError`: Numerical computation errors
+- `MatrixError`: Matrix operation errors
+- `ConfigurationError`: Configuration errors
+
+### Error Helpers
+
+The crate provides convenient helper functions for creating errors with proper context:
+
+```rust
+// Create a sensor error
+let error = helpers::sensor_error(
+    "GPS data contains invalid values",
+    SensorType::GPS,
+    Some("NaN values detected in position")
+);
+
+// Create a timing error
+let error = helpers::timing_error(
+    "Invalid time step",
+    Some(dt)
+);
+
+// Check if a vector contains invalid values
+helpers::check_vector_valid(&position, "Position")?;
+
+// Check if a time delta is valid
+helpers::check_time_delta(dt)?;
+```
+
+### Using the Error System
+
+When implementing functions that can fail, return `AhrsResult<T>`:
+
+```rust
+use crate::error::{AhrsResult, helpers, SensorType};
+
+pub fn process_gps_data(data: &GpsData) -> AhrsResult<StateVector> {
+    // Validate input data
+    if data.position.iter().any(|v| v.is_nan() || v.is_infinite()) {
+        return Err(helpers::sensor_error(
+            "GPS data contains invalid values".to_string(),
+            SensorType::GPS,
+            Some("NaN or infinite values detected".to_string())
+        ));
+    }
+    
+    // Process valid data
+    // ...
+    
+    Ok(state)
+}
+```
+
+## Platform Support
+
+This crate supports multiple platforms with different feature flags:
+
+- **desktop**: For desktop applications and SITL (Software In The Loop) simulation
+- **stm32**: For STM32 microcontrollers with Embassy framework
+
+## License
+
+This crate is provided under the MIT License.
 
 ## Overview
 
@@ -11,29 +97,6 @@ This crate provides a robust implementation of state estimation algorithms for a
 - Virtual/Augmented reality tracking
 - Aerospace attitude determination
 - Inertial navigation systems
-
-## Features
-
-- **Extended Kalman Filter (EKF)** implementation for state estimation
-- **Interacting Multiple Model (IMM)** filter for adaptive motion model selection
-- **Sensor fusion** from various inputs:
-  - IMU (accelerometer, gyroscope, magnetometer)
-  - GPS
-  - Barometer
-- **Automatic bias estimation** for gyroscope and accelerometer
-- **Health monitoring** with multiple diagnostic checks
-- **Coordinate transformations** between body and NED (North-East-Down) frames
-- **Quaternion-based attitude representation** for numerical stability
-- **Cross-platform support** for both desktop and embedded systems
-
-## Platform Support
-
-This crate supports multiple platforms with different feature flags:
-
-- **desktop**: For desktop applications and SITL (Software In The Loop) simulation
-- **stm32**: For STM32 microcontrollers with Embassy framework
-- **std**: Enables standard library features (included in desktop)
-- **embassy**: Enables Embassy framework support (included in stm32)
 
 ## Usage
 

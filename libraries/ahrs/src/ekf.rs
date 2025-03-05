@@ -1,7 +1,9 @@
 use crate::sensors::{BaroData, GpsData, ImuData};
 use crate::utils;
-use crate::{AhrsConfig, AhrsError, AhrsResult, StateVector};
+use crate::{AhrsConfig, AhrsResult, StateVector};
 use nalgebra as na;
+use crate::error::{SensorType, FilterType};
+use crate::error::helpers;
 
 /// Extended Kalman Filter (EKF) implementation
 pub struct Ekf {
@@ -116,17 +118,19 @@ impl Ekf {
     ) -> AhrsResult<StateVector> {
         // Input validation
         if dt <= 0.0 || dt.is_nan() {
-            return Err(AhrsError::TimingError(format!(
-                "Invalid time step in EKF prediction: {}",
-                dt
-            )));
+            return Err(helpers::timing_error(
+                format!("Invalid time step in EKF prediction: {}", dt),
+                Some(dt)
+            ));
         }
 
         if imu_data.accel.iter().any(|v| v.is_nan() || v.is_infinite())
             || imu_data.gyro.iter().any(|v| v.is_nan() || v.is_infinite())
         {
-            return Err(AhrsError::SensorError(
-                "IMU data contains NaN or infinite values".into(),
+            return Err(helpers::sensor_error(
+                "IMU data contains NaN or infinite values".to_string(),
+                SensorType::IMU,
+                None::<String>
             ));
         }
 
@@ -269,8 +273,10 @@ impl Ekf {
                 .iter()
                 .any(|v| v.is_nan() || v.is_infinite() || *v <= 0.0)
         {
-            return Err(AhrsError::SensorError(
-                "GPS data contains invalid values".into(),
+            return Err(helpers::sensor_error(
+                "GPS data contains invalid values".to_string(),
+                SensorType::GPS,
+                Some("NaN, infinite, or negative accuracy values detected".to_string()),
             ));
         }
 
@@ -330,7 +336,11 @@ impl Ekf {
         // Check if S is invertible
         let s_inv = match s.try_inverse() {
             Some(inv) => inv,
-            None => return Err(AhrsError::FilterDivergence),
+            None => return Err(helpers::filter_divergence(
+                "Matrix inversion failed during GPS update",
+                FilterType::EKF,
+                None
+            )),
         };
 
         let k = pht * s_inv;
@@ -452,8 +462,10 @@ impl Ekf {
             || baro_data.accuracy.is_infinite()
             || baro_data.accuracy <= 0.0
         {
-            return Err(AhrsError::SensorError(
-                "Barometer data contains invalid values".into(),
+            return Err(helpers::sensor_error(
+                "Barometer data contains invalid values".to_string(),
+                SensorType::Barometer,
+                None::<String>
             ));
         }
 
@@ -624,7 +636,11 @@ impl Ekf {
         // Check if S is invertible
         let s_inv = match s.try_inverse() {
             Some(inv) => inv,
-            None => return Err(AhrsError::FilterDivergence),
+            None => return Err(helpers::filter_divergence(
+                "Matrix inversion failed during magnetometer update",
+                FilterType::EKF,
+                None
+            )),
         };
 
         // Kalman gain for attitude correction

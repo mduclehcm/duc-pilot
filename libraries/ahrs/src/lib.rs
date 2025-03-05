@@ -55,14 +55,16 @@
 //! - **stm32**: For STM32 microcontrollers with Embassy framework
 
 use nalgebra as na;
-use thiserror::Error;
 use crate::imm::NUM_MODELS;
+pub use crate::error::{AhrsError, AhrsResult, FilterType, SensorType};
+use crate::error::helpers;
 
 pub mod ekf;
 pub mod imm;
 pub mod models;
 pub mod sensors;
 pub mod utils;
+pub mod error;
 
 /// Default window size for rate calculation (number of samples to keep)
 pub const DEFAULT_RATE_WINDOW_SIZE: usize = 10;
@@ -78,28 +80,6 @@ pub const DEFAULT_VELOCITY_COVARIANCE: f32 = 1.0;
 
 /// Default attitude covariance scaling factor
 pub const DEFAULT_ATTITUDE_COVARIANCE: f32 = 0.1;
-
-/// Errors that can occur during AHRS operation
-#[derive(Error, Debug)]
-pub enum AhrsError {
-    #[error("Initialization error: {0}")]
-    InitializationError(String),
-
-    #[error("Sensor error: {0}")]
-    SensorError(String),
-
-    #[error("Filter divergence detected")]
-    FilterDivergence,
-
-    #[error("Invalid state detected")]
-    InvalidState,
-
-    #[error("Timing error: {0}")]
-    TimingError(String),
-}
-
-/// Result type for AHRS operations
-pub type AhrsResult<T> = Result<T, AhrsError>;
 
 /// Struct to hold information about sensor update rates
 #[derive(Debug, Clone, Copy)]
@@ -397,7 +377,7 @@ impl Ahrs {
 
         // Validate time step
         if dt <= 0.0 || dt.is_nan() || dt.is_infinite() {
-            return Err(AhrsError::TimingError(format!("Invalid time step: {}", dt)));
+            return Err(helpers::timing_error(format!("Invalid time step: {}", dt), Some(dt)));
         }
 
         // Run IMM predict step - this handles prediction for all internal models
@@ -437,8 +417,10 @@ impl Ahrs {
                 .iter()
                 .any(|v| v.is_nan() || v.is_infinite())
         {
-            return Err(AhrsError::SensorError(
-                "GPS data contains NaN or infinite values".into(),
+            return Err(helpers::sensor_error(
+                "GPS data contains NaN or infinite values".to_string(),
+                SensorType::GPS,
+                None::<String>,
             ));
         }
 
@@ -475,8 +457,10 @@ impl Ahrs {
     pub fn update_baro(&mut self, baro_data: &sensors::BaroData) -> AhrsResult<()> {
         // Validate input data
         if baro_data.altitude.is_nan() || baro_data.altitude.is_infinite() {
-            return Err(AhrsError::SensorError(
-                "Barometer data contains NaN or infinite values".into(),
+            return Err(helpers::sensor_error(
+                "Barometer data contains NaN or infinite values".to_string(),
+                SensorType::Barometer,
+                None::<String>,
             ));
         }
 

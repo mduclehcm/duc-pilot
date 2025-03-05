@@ -1,8 +1,8 @@
 use crate::models::{ModelFilter, create_model_filters, ModelFilterEnum};
 use crate::sensors::{BaroData, GpsData, ImuData};
-use crate::{AhrsConfig, AhrsError, AhrsResult, StateVector};
+use crate::{AhrsConfig, AhrsResult, StateVector};
+use crate::error::helpers;
 use nalgebra as na;
-use std::fmt;
 
 /// The number of model filters used in the IMM
 pub const NUM_MODELS: usize = 4;
@@ -124,8 +124,9 @@ impl Imm {
     /// Update mixing probabilities based on model probabilities and transition matrix
     fn update_mixing_probabilities(&mut self) -> AhrsResult<()> {
         if !self.initialized {
-            return Err(AhrsError::InitializationError(
+            return Err(helpers::init_error(
                 "IMM filter not initialized".to_string(),
+                Some("update_mixing_probabilities".to_string()),
             ));
         }
         
@@ -158,8 +159,9 @@ impl Imm {
     /// Compute mixed initial states for each filter
     fn mix_states(&mut self) -> AhrsResult<()> {
         if !self.initialized {
-            return Err(AhrsError::InitializationError(
+            return Err(helpers::init_error(
                 "IMM filter not initialized".to_string(),
+                Some("mix_states".to_string()),
             ));
         }
         
@@ -288,8 +290,9 @@ impl Imm {
     fn update_model_probabilities(&mut self, innovations: &[na::Vector6<f32>; NUM_MODELS], 
                                 innovation_covariances: &[na::Matrix6<f32>; NUM_MODELS]) -> AhrsResult<()> {
         if !self.initialized {
-            return Err(AhrsError::InitializationError(
+            return Err(helpers::init_error(
                 "IMM filter not initialized".to_string(),
+                Some("update_model_probabilities".to_string()),
             ));
         }
         
@@ -335,8 +338,9 @@ impl Imm {
     /// Run prediction step for all models
     pub fn predict(&mut self, imu_data: &ImuData, dt: f32) -> AhrsResult<StateVector> {
         if !self.initialized {
-            return Err(AhrsError::InitializationError(
+            return Err(helpers::init_error(
                 "IMM filter not initialized".to_string(),
+                Some("predict".to_string()),
             ));
         }
         
@@ -358,8 +362,9 @@ impl Imm {
     /// Run update step for all models with GPS data
     pub fn update_gps(&mut self, gps_data: &GpsData) -> AhrsResult<StateVector> {
         if !self.initialized {
-            return Err(AhrsError::InitializationError(
+            return Err(helpers::init_error(
                 "IMM filter not initialized".to_string(),
+                Some("update_gps".to_string()),
             ));
         }
         
@@ -388,8 +393,9 @@ impl Imm {
     /// Run update step for all models with barometer data
     pub fn update_baro(&mut self, baro_data: &BaroData) -> AhrsResult<StateVector> {
         if !self.initialized {
-            return Err(AhrsError::InitializationError(
+            return Err(helpers::init_error(
                 "IMM filter not initialized".to_string(),
+                Some("update_baro".to_string()),
             ));
         }
         
@@ -560,8 +566,9 @@ impl Imm {
         for row in &matrix {
             let sum: f32 = row.iter().sum();
             if (sum - 1.0).abs() > NUMERICAL_STABILITY_THRESHOLD {
-                return Err(AhrsError::InitializationError(
-                    format!("Transition matrix row does not sum to 1.0: {}", sum)
+                return Err(helpers::init_error(
+                    format!("Transition matrix row does not sum to 1.0: {}", sum),
+                    Some("set_transition_matrix".to_string()),
                 ));
             }
         }
@@ -576,15 +583,17 @@ impl Imm {
     pub fn set_transition_matrix_from_slices(&mut self, matrix: &[&[f32]]) -> AhrsResult<()> {
         // Validate matrix dimensions
         if matrix.len() != NUM_MODELS {
-            return Err(AhrsError::InitializationError(
-                format!("Invalid transition matrix size: expected {} rows", NUM_MODELS)
+            return Err(helpers::init_error(
+                format!("Invalid transition matrix size: expected {} rows", NUM_MODELS),
+                Some("set_transition_matrix_from_slices".to_string()),
             ));
         }
         
         for row in matrix {
             if row.len() != NUM_MODELS {
-                return Err(AhrsError::InitializationError(
-                    format!("Invalid transition matrix size: expected {} columns", NUM_MODELS)
+                return Err(helpers::init_error(
+                    format!("Invalid transition matrix size: expected {} columns", NUM_MODELS),
+                    Some("set_transition_matrix_from_slices".to_string()),
                 ));
             }
         }
@@ -593,8 +602,9 @@ impl Imm {
         for row in matrix {
             let sum: f32 = row.iter().sum();
             if (sum - 1.0).abs() > NUMERICAL_STABILITY_THRESHOLD {
-                return Err(AhrsError::InitializationError(
-                    format!("Transition matrix row does not sum to 1.0: {}", sum)
+                return Err(helpers::init_error(
+                    format!("Transition matrix row does not sum to 1.0: {}", sum),
+                    Some("set_transition_matrix_from_slices".to_string()),
                 ));
             }
         }
@@ -609,16 +619,17 @@ impl Imm {
         Ok(())
     }
     
-    /// Set minimum allowed model probability
+    /// Set the minimum allowed model probability
     pub fn set_min_probability(&mut self, min_prob: f32) -> AhrsResult<()> {
-        if min_prob < MIN_ALLOWED_PROBABILITY || min_prob > MAX_ALLOWED_PROBABILITY {
-            return Err(AhrsError::InitializationError(
-                format!("Invalid minimum probability: {}, should be between {} and {}", min_prob, MIN_ALLOWED_PROBABILITY, MAX_ALLOWED_PROBABILITY)
+        // Validate min probability
+        if min_prob < MIN_ALLOWED_PROBABILITY || min_prob > MAX_ALLOWED_PROBABILITY || min_prob.is_nan() {
+            return Err(helpers::config_error(
+                format!("Invalid minimum probability value: {}", min_prob),
+                Some("min_probability".to_string())
             ));
         }
         
         self.min_probability = min_prob;
-        
         Ok(())
     }
 }
