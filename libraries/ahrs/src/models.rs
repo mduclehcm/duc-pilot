@@ -1,10 +1,10 @@
 use nalgebra as na;
-use crate::StateVector;
+use crate::{StateVector, AhrsError, AhrsResult};
 
 /// Trait for motion models used in the AHRS system
 pub trait MotionModel {
     /// Predict the next state based on the current state and time step
-    fn predict(&self, state: &StateVector, dt: f32) -> StateVector;
+    fn predict(&self, state: &StateVector, dt: f32) -> AhrsResult<StateVector>;
     
     /// Get the process noise covariance for the given time step
     fn process_noise(&self, dt: f32) -> na::Matrix<f32, na::Const<12>, na::Const<12>, na::ArrayStorage<f32, 12, 12>>;
@@ -51,7 +51,17 @@ impl ConstantVelocityModel {
 }
 
 impl MotionModel for ConstantVelocityModel {
-    fn predict(&self, state: &StateVector, dt: f32) -> StateVector {
+    fn predict(&self, state: &StateVector, dt: f32) -> AhrsResult<StateVector> {
+        // Validate input
+        if dt <= 0.0 || dt.is_nan() || dt.is_infinite() {
+            return Err(AhrsError::TimingError(format!("Invalid time step: {}", dt)));
+        }
+        
+        if state.position.iter().any(|v| v.is_nan() || v.is_infinite()) ||
+           state.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(AhrsError::InvalidState);
+        }
+        
         let mut new_state = state.clone();
         
         // Position update: p_new = p + v * dt
@@ -62,7 +72,13 @@ impl MotionModel for ConstantVelocityModel {
         
         // Attitude, accel_bias, and gyro_bias remain the same in this simple model
         
-        new_state
+        // Validate output
+        if new_state.position.iter().any(|v| v.is_nan() || v.is_infinite()) ||
+           new_state.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(AhrsError::InvalidState);
+        }
+        
+        Ok(new_state)
     }
     
     fn process_noise(&self, dt: f32) -> na::Matrix<f32, na::Const<12>, na::Const<12>, na::ArrayStorage<f32, 12, 12>> {
@@ -115,9 +131,6 @@ pub struct ConstantAccelerationModel {
     
     /// Process noise for accelerometer bias
     pub accel_bias_noise: f32,
-    
-    /// Current acceleration estimate
-    pub acceleration: na::Vector3<f32>,
 }
 
 impl ConstantAccelerationModel {
@@ -137,35 +150,48 @@ impl ConstantAccelerationModel {
             att_noise,
             gyro_bias_noise,
             accel_bias_noise,
-            acceleration: na::Vector3::zeros(),
         }
-    }
-    
-    /// Set the current acceleration estimate
-    pub fn set_acceleration(&mut self, acceleration: na::Vector3<f32>) {
-        self.acceleration = acceleration;
     }
 }
 
 impl MotionModel for ConstantAccelerationModel {
-    fn predict(&self, state: &StateVector, dt: f32) -> StateVector {
+    fn predict(&self, state: &StateVector, dt: f32) -> AhrsResult<StateVector> {
+        // Validate input
+        if dt <= 0.0 || dt.is_nan() || dt.is_infinite() {
+            return Err(AhrsError::TimingError(format!("Invalid time step: {}", dt)));
+        }
+        
+        if state.position.iter().any(|v| v.is_nan() || v.is_infinite()) ||
+           state.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(AhrsError::InvalidState);
+        }
+        
         let mut new_state = state.clone();
         
-        // Velocity update: v_new = v + a * dt
-        new_state.velocity += self.acceleration * dt;
+        // Estimate current acceleration from accel_bias
+        let acceleration = -state.accel_bias;
         
-        // Position update: p_new = p + v * dt + 0.5 * a * dt^2
-        new_state.position += state.velocity * dt + 0.5 * self.acceleration * dt * dt;
+        // Position update with constant acceleration
+        // p_new = p + v*dt + 0.5*a*dt^2
+        new_state.position += state.velocity * dt + 0.5 * acceleration * dt * dt;
         
-        // Attitude, accel_bias, and gyro_bias remain the same in this simple model
+        // Velocity update with constant acceleration
+        // v_new = v + a*dt
+        new_state.velocity += acceleration * dt;
         
-        new_state
+        // Validate output
+        if new_state.position.iter().any(|v| v.is_nan() || v.is_infinite()) ||
+           new_state.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(AhrsError::InvalidState);
+        }
+        
+        Ok(new_state)
     }
     
     fn process_noise(&self, dt: f32) -> na::Matrix<f32, na::Const<12>, na::Const<12>, na::ArrayStorage<f32, 12, 12>> {
         let mut q = na::Matrix::<f32, na::Const<12>, na::Const<12>, na::ArrayStorage<f32, 12, 12>>::zeros();
         
-        // Position noise (grows with time cubed)
+        // Position noise (grows with time cubed for constant acceleration model)
         for i in 0..3 {
             q[(i, i)] = self.pos_noise * dt * dt * dt;
         }
@@ -176,14 +202,19 @@ impl MotionModel for ConstantAccelerationModel {
         }
         
         // Acceleration noise (grows with time)
-        let acc_idx = 6;
-        for i in 0..3 {
-            q[(acc_idx + i, acc_idx + i)] = self.acc_noise * dt;
+        // Note: This affects the velocity part of the state
+        for i in 3..6 {
+            q[(i, i)] += self.acc_noise * dt;
         }
         
-        // Attitude noise (grows with time)
-        for i in 9..12 {
+        // Attitude noise
+        for i in 6..9 {
             q[(i, i)] = self.att_noise * dt;
+        }
+        
+        // Gyro bias noise
+        for i in 9..12 {
+            q[(i, i)] = self.gyro_bias_noise * dt;
         }
         
         q
@@ -194,7 +225,7 @@ impl MotionModel for ConstantAccelerationModel {
     }
 }
 
-/// Coordinated turn motion model for aircraft
+/// Coordinated turn motion model
 pub struct CoordinatedTurnModel {
     /// Process noise for position
     pub pos_noise: f32,
@@ -207,9 +238,6 @@ pub struct CoordinatedTurnModel {
     
     /// Process noise for attitude
     pub att_noise: f32,
-    
-    /// Current turn rate estimate (rad/s)
-    pub turn_rate: f32,
 }
 
 impl CoordinatedTurnModel {
@@ -225,44 +253,63 @@ impl CoordinatedTurnModel {
             vel_noise,
             turn_rate_noise,
             att_noise,
-            turn_rate: 0.0,
         }
-    }
-    
-    /// Set the current turn rate estimate
-    pub fn set_turn_rate(&mut self, turn_rate: f32) {
-        self.turn_rate = turn_rate;
     }
 }
 
 impl MotionModel for CoordinatedTurnModel {
-    fn predict(&self, state: &StateVector, dt: f32) -> StateVector {
+    fn predict(&self, state: &StateVector, dt: f32) -> AhrsResult<StateVector> {
+        // Validate input
+        if dt <= 0.0 || dt.is_nan() || dt.is_infinite() {
+            return Err(AhrsError::TimingError(format!("Invalid time step: {}", dt)));
+        }
+        
+        if state.position.iter().any(|v| v.is_nan() || v.is_infinite()) ||
+           state.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(AhrsError::InvalidState);
+        }
+        
         let mut new_state = state.clone();
         
-        if self.turn_rate.abs() < 1e-6 {
+        // Extract turn rate from gyro measurements (assume Z-axis turn)
+        let turn_rate = state.gyro_bias.z;
+        
+        // Check for very small turn rate to avoid division by zero
+        if turn_rate.abs() < 1e-6 {
             // If turn rate is very small, use constant velocity model
             new_state.position += state.velocity * dt;
         } else {
-            let v = state.velocity.norm();
-            let heading = state.velocity.y.atan2(state.velocity.x);
-            let new_heading = heading + self.turn_rate * dt;
+            // Coordinated turn equations
+            let speed = state.velocity.norm();
+            let heading = f32::atan2(state.velocity.y, state.velocity.x);
+            let turn_radius = speed / turn_rate;
             
-            // Calculate new velocity direction
-            let new_vel_x = v * new_heading.cos();
-            let new_vel_y = v * new_heading.sin();
-            new_state.velocity.x = new_vel_x;
-            new_state.velocity.y = new_vel_y;
+            // New heading after turn
+            let new_heading = heading + turn_rate * dt;
             
-            // Position update for coordinated turn
-            let r = v / self.turn_rate; // Turn radius
-            new_state.position.x = state.position.x + r * (new_heading.sin() - heading.sin());
-            new_state.position.y = state.position.y + r * (heading.cos() - new_heading.cos());
+            // New velocity components
+            new_state.velocity.x = speed * f32::cos(new_heading);
+            new_state.velocity.y = speed * f32::sin(new_heading);
             
-            // Vertical component remains unchanged in a coordinated turn
-            new_state.position.z = state.position.z + state.velocity.z * dt;
+            // New position
+            // For small time steps, approximate with:
+            new_state.position.x += state.velocity.x * dt;
+            new_state.position.y += state.velocity.y * dt;
+            
+            // For larger time steps or more precision, use:
+            // new_state.position.x = state.position.x + 2.0 * turn_radius * f32::sin(turn_rate * dt / 2.0) * f32::cos(heading + turn_rate * dt / 2.0);
+            // new_state.position.y = state.position.y + 2.0 * turn_radius * f32::sin(turn_rate * dt / 2.0) * f32::sin(heading + turn_rate * dt / 2.0);
+            
+            // The z component remains the same in a coordinated turn
         }
         
-        new_state
+        // Validate output
+        if new_state.position.iter().any(|v| v.is_nan() || v.is_infinite()) ||
+           new_state.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(AhrsError::InvalidState);
+        }
+        
+        Ok(new_state)
     }
     
     fn process_noise(&self, dt: f32) -> na::Matrix<f32, na::Const<12>, na::Const<12>, na::ArrayStorage<f32, 12, 12>> {
@@ -278,11 +325,11 @@ impl MotionModel for CoordinatedTurnModel {
             q[(i, i)] = self.vel_noise * dt;
         }
         
-        // Turn rate noise
-        q[(6, 6)] = self.turn_rate_noise * dt;
+        // Add extra noise for z-axis rotation (turn rate)
+        q[(8, 8)] += self.turn_rate_noise * dt;
         
         // Attitude noise
-        for i in 7..10 {
+        for i in 6..9 {
             q[(i, i)] = self.att_noise * dt;
         }
         

@@ -3,9 +3,25 @@ name = "ahrs"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["std"]
+std = ["nalgebra/std"]
+embassy = ["embassy-time", "embedded-hal", "heapless"]
+# Enable this feature for desktop SITL simulation
+desktop = ["std"]
+# Enable this feature for STM32 with Embassy
+stm32 = ["embassy", "embassy-stm32", "embedded-hal-async"]
+
 [dependencies]
-nalgebra = "0.32.3"
+nalgebra = { version = "0.32.3", default-features = false }
 thiserror = "1.0.50"
+
+# Dependencies for Embassy support
+embassy-time = { version = "0.1.0", optional = true }
+embassy-stm32 = { version = "0.1.0", optional = true }
+embedded-hal = { version = "0.2.7", optional = true }
+embedded-hal-async = { version = "1.0.0-rc.1", optional = true }
+heapless = { version = "0.7.16", optional = true }
 
 [dev-dependencies]
 fastrand = "2.0.1"

@@ -114,6 +114,20 @@ impl Ekf {
         imu_data: &ImuData,
         dt: f32,
     ) -> AhrsResult<StateVector> {
+        // Input validation
+        if dt <= 0.0 || dt.is_nan() {
+            return Err(AhrsError::TimingError(format!(
+                "Invalid time step in EKF prediction: {}", dt
+            )));
+        }
+        
+        if imu_data.accel.iter().any(|v| v.is_nan() || v.is_infinite()) ||
+           imu_data.gyro.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(AhrsError::SensorError(
+                "IMU data contains NaN or infinite values".into()
+            ));
+        }
+        
         let mut new_state = state.clone();
 
         // Extract gyro and accelerometer measurements
@@ -243,6 +257,15 @@ impl Ekf {
         state: &StateVector,
         gps_data: &GpsData,
     ) -> AhrsResult<StateVector> {
+        // Input validation
+        if gps_data.position.iter().any(|v| v.is_nan() || v.is_infinite()) ||
+           gps_data.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) ||
+           gps_data.accuracy.iter().any(|v| v.is_nan() || v.is_infinite() || *v <= 0.0) {
+            return Err(AhrsError::SensorError(
+                "GPS data contains invalid values".into()
+            ));
+        }
+        
         let mut new_state = state.clone();
 
         // Create measurement vector (GPS position and velocity)
@@ -414,6 +437,14 @@ impl Ekf {
         state: &StateVector,
         baro_data: &BaroData,
     ) -> AhrsResult<StateVector> {
+        // Input validation
+        if baro_data.altitude.is_nan() || baro_data.altitude.is_infinite() ||
+           baro_data.accuracy.is_nan() || baro_data.accuracy.is_infinite() || baro_data.accuracy <= 0.0 {
+            return Err(AhrsError::SensorError(
+                "Barometer data contains invalid values".into()
+            ));
+        }
+        
         let mut new_state = state.clone();
 
         // Create measurement (altitude is negative of down position in NED)
@@ -611,4 +642,22 @@ impl Ekf {
 
         Ok(new_state)
     }
+}
+
+// Helper function to ensure covariance matrix stays positive definite
+// This should be called after each covariance update
+fn ensure_positive_definite(
+    matrix: &mut na::Matrix<f32, na::Const<12>, na::Const<12>, na::ArrayStorage<f32, 12, 12>>
+) {
+    // Make the matrix symmetric
+    *matrix = (matrix.clone() + matrix.transpose()) * 0.5;
+    
+    // Add a small value to the diagonal for numerical stability
+    for i in 0..matrix.nrows() {
+        matrix[(i, i)] += 1e-6;
+    }
+    
+    // More sophisticated methods could be implemented here, such as:
+    // - Eigenvalue decomposition and ensuring all eigenvalues > 0
+    // - Cholesky decomposition and reconstruction
 }

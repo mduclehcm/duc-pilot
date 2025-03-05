@@ -46,6 +46,13 @@
 //! - High-precision state estimation for attitude, velocity, and position
 //! - Operation in GPS-denied environments
 //! - Low-latency output for real-time control systems
+//!
+//! ## Platform Support
+//!
+//! This crate supports multiple platforms with different feature flags:
+//!
+//! - **desktop**: For desktop applications and SITL (Software In The Loop) simulation
+//! - **stm32**: For STM32 microcontrollers with Embassy framework
 
 use nalgebra as na;
 use thiserror::Error;
@@ -70,6 +77,9 @@ pub enum AhrsError {
 
     #[error("Invalid state detected")]
     InvalidState,
+
+    #[error("Timing error: {0}")]
+    TimingError(String),
 }
 
 /// Result type for AHRS operations
@@ -206,24 +216,30 @@ impl Ahrs {
     }
 
     /// Update the filter with IMU measurements
-    pub fn update_imu(&mut self, imu_data: &sensors::ImuData, timestamp: f32) -> AhrsResult<()> {
+    pub fn update_imu(&mut self, imu_data: &sensors::ImuData) -> AhrsResult<()> {
+        // Get timestamp
+        let timestamp = imu_data.timestamp;
+        
         // Calculate time delta for prediction
         let dt = match self.last_update {
             Some(last_time) => timestamp - last_time,
             None => 1.0 / self.config.update_rate,
         };
 
+        // Validate time step
+        if dt <= 0.0 || dt.is_nan() || dt.is_infinite() {
+            return Err(AhrsError::TimingError(format!("Invalid time step: {}", dt)));
+        }
+
         // Prediction step using EKF
         let updated_state = self.ekf.predict(&self.state, imu_data, dt)?;
         self.state = updated_state;
 
         // Predict using IMM
-        if dt > 0.0 {
-            let _predicted_states = self.imm.predict(&self.state, dt);
+        let _predicted_states = self.imm.predict(&self.state, dt)?;
 
-            // Combine the states from all models
-            self.state = self.imm.combine_states();
-        }
+        // Combine the states from all models
+        self.state = self.imm.combine_states();
 
         self.last_update = Some(timestamp);
         Ok(())
@@ -231,6 +247,12 @@ impl Ahrs {
 
     /// Update the filter with GPS measurements
     pub fn update_gps(&mut self, gps_data: &sensors::GpsData) -> AhrsResult<()> {
+        // Validate input data
+        if gps_data.position.iter().any(|v| v.is_nan() || v.is_infinite()) ||
+           gps_data.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(AhrsError::SensorError("GPS data contains NaN or infinite values".into()));
+        }
+        
         // Update EKF with GPS data
         let updated_state = self.ekf.update_gps(&self.state, gps_data)?;
         self.state = updated_state;
@@ -243,6 +265,11 @@ impl Ahrs {
 
     /// Update the filter with barometer measurements
     pub fn update_baro(&mut self, baro_data: &sensors::BaroData) -> AhrsResult<()> {
+        // Validate input data
+        if baro_data.altitude.is_nan() || baro_data.altitude.is_infinite() {
+            return Err(AhrsError::SensorError("Barometer data contains NaN or infinite values".into()));
+        }
+        
         // Update EKF with barometer data
         let updated_state = self.ekf.update_baro(&self.state, baro_data)?;
         self.state = updated_state;

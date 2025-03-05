@@ -24,13 +24,22 @@ This crate provides a robust implementation of state estimation algorithms for a
 - **Health monitoring** with multiple diagnostic checks
 - **Coordinate transformations** between body and NED (North-East-Down) frames
 - **Quaternion-based attitude representation** for numerical stability
+- **Cross-platform support** for both desktop and embedded systems
+
+## Platform Support
+
+This crate supports multiple platforms with different feature flags:
+
+- **desktop**: For desktop applications and SITL (Software In The Loop) simulation
+- **stm32**: For STM32 microcontrollers with Embassy framework
+- **std**: Enables standard library features (included in desktop)
+- **embassy**: Enables Embassy framework support (included in stm32)
 
 ## Usage
 
 ```rust
-use ahrs::{Ahrs, AhrsConfig, ProcessNoise, SensorNoise, sensors::ImuData};
+use ahrs::{Ahrs, AhrsConfig, ProcessNoise, SensorNoise, sensors::{ImuData, time_convert}};
 use nalgebra as na;
-use std::time::Instant;
 
 fn main() {
     // Configure the AHRS system
@@ -61,12 +70,11 @@ fn main() {
         accel: na::Vector3::new(0.0, 0.0, 9.81), // Gravity along z-axis
         gyro: na::Vector3::new(0.0, 0.0, 0.0),   // No rotation
         mag: Some(na::Vector3::new(0.3, 0.0, 0.5)), // Magnetic field
-        timestamp: Instant::now(),
+        timestamp: time_convert::now(), // Current time in seconds
     };
 
     // Update the filter with sensor data
-    let timestamp = 0.01; // time in seconds
-    ahrs.update_imu(&imu_data, timestamp).expect("Failed to update with IMU data");
+    ahrs.update_imu(&imu_data).expect("Failed to update with IMU data");
 
     // Get the current state estimate
     let state = ahrs.state();
@@ -84,6 +92,17 @@ fn main() {
     }
 }
 ```
+
+## Timing System
+
+The library uses a simple floating-point (`f32`) representation for timestamps, where:
+
+- All timestamps are in seconds
+- Helper modules provide platform-specific time conversion
+- `time_convert::now()` returns the current time in seconds
+- Timestamps are relative to system startup
+
+This approach simplifies usage across both desktop and embedded platforms while maintaining consistent time units.
 
 ## State Representation
 

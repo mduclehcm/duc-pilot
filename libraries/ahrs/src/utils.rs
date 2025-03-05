@@ -176,46 +176,42 @@ pub fn skew_symmetric(v: &na::Vector3<f32>) -> na::Matrix3<f32> {
     )
 }
 
-/// Calculate the maximum eigenvalue of a 3x3 matrix using power iteration method
-/// This is a simplified approach that works well for covariance matrices
+/// Maximum eigenvalue calculation for a 3x3 matrix
+/// Uses power iteration method for better numerical stability
 pub fn max_eigenvalue(matrix: &na::Matrix3<f32>) -> f32 {
-    // For a covariance matrix, we can use a simpler approach
-    // The maximum eigenvalue is bounded by the maximum row/column sum
-    // and for symmetric positive definite matrices, this is a good approximation
+    // Starting vector for power iteration
+    let mut v = na::Vector3::new(1.0, 1.0, 1.0).normalize();
     
-    // First check if the matrix has NaN or infinite values
-    for i in 0..3 {
-        for j in 0..3 {
-            if matrix[(i, j)].is_nan() || matrix[(i, j)].is_infinite() {
-                return f32::INFINITY; // Return infinity to indicate an unhealthy state
-            }
-        }
-    }
+    // Number of iterations
+    let max_iter = 10;
     
-    // For a 3x3 matrix, we can use the power iteration method
-    // Start with a random vector
-    let mut v = na::Vector3::new(1.0, 1.0, 1.0);
-    
-    // Normalize the vector
-    v = v.normalize();
-    
-    // Iterate a few times to converge to the dominant eigenvector
-    for _ in 0..10 {
-        // Multiply by the matrix
+    // Perform power iteration
+    for _ in 0..max_iter {
+        // Apply matrix
         let v_new = matrix * v;
         
-        // Check for zero vector
-        if v_new.norm() < 1e-10 {
+        // Normalize
+        if v_new.norm() > 1e-10 {
+            v = v_new.normalize();
+        } else {
+            // If the vector becomes too small, return zero
             return 0.0;
         }
-        
-        // Normalize
-        v = v_new.normalize();
     }
     
-    // Calculate the Rayleigh quotient to get the eigenvalue
+    // Compute Rayleigh quotient
     let rayleigh = (v.transpose() * matrix * v)[0];
     
-    // Ensure we don't return negative values for covariance matrices
-    rayleigh.max(0.0)
+    rayleigh.abs()
+}
+
+/// Check if a matrix is positive definite
+pub fn is_positive_definite(matrix: &na::Matrix3<f32>) -> bool {
+    // Compute determinants of leading principal minors
+    let d1 = matrix[(0, 0)];
+    let d2 = matrix[(0, 0)] * matrix[(1, 1)] - matrix[(0, 1)] * matrix[(1, 0)];
+    let d3 = matrix.determinant();
+    
+    // Matrix is positive definite if all determinants are positive
+    d1 > 0.0 && d2 > 0.0 && d3 > 0.0
 } 
