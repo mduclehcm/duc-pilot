@@ -643,21 +643,3 @@ impl Ekf {
         Ok(new_state)
     }
 }
-
-// Helper function to ensure covariance matrix stays positive definite
-// This should be called after each covariance update
-fn ensure_positive_definite(
-    matrix: &mut na::Matrix<f32, na::Const<12>, na::Const<12>, na::ArrayStorage<f32, 12, 12>>
-) {
-    // Make the matrix symmetric
-    *matrix = (matrix.clone() + matrix.transpose()) * 0.5;
-    
-    // Add a small value to the diagonal for numerical stability
-    for i in 0..matrix.nrows() {
-        matrix[(i, i)] += 1e-6;
-    }
-    
-    // More sophisticated methods could be implemented here, such as:
-    // - Eigenvalue decomposition and ensuring all eigenvalues > 0
-    // - Cholesky decomposition and reconstruction
-}

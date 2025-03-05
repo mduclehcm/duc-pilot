@@ -298,7 +298,7 @@ impl Ahrs {
         self.state = updated_state;
 
         // Predict using IMM
-        let _predicted_states = self.imm.predict(&self.state, dt)?;
+        self.imm.predict(&self.state, dt)?;
 
         // Combine the states from all models
         self.state = self.imm.combine_states();

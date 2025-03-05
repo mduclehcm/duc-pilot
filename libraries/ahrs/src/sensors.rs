@@ -1,35 +1,25 @@
 use nalgebra as na;
-#[cfg(feature = "std")]
-use std::time::Instant;
 #[cfg(feature = "embassy")]
 use embassy_time::{Instant, Duration};
 
 /// Timestamp type - using f32 in seconds for all timestamps
 pub type TimeStamp = f32;
 
-/// Time conversion utilities
-#[cfg(feature = "std")]
+/// Standard library time conversion utilities
+#[cfg(feature = "desktop")]
 pub mod time_convert {
     use std::time::Instant;
+    use std::sync::OnceLock;
     use super::TimeStamp;
     
     /// Base time for std::time::Instant conversions
-    static mut BASE_TIME: Option<Instant> = None;
+    static BASE_TIME: OnceLock<Instant> = OnceLock::new();
     
     /// Convert from std::time::Instant to TimeStamp (f32 seconds)
     pub fn instant_to_timestamp(instant: &Instant) -> TimeStamp {
-        unsafe {
-            if BASE_TIME.is_none() {
-                BASE_TIME = Some(*instant);
-            }
-            
-            if let Some(base) = BASE_TIME {
-                instant.duration_since(base).as_secs_f32()
-            } else {
-                // Fallback - should never happen due to check above
-                instant.elapsed().as_secs_f32()
-            }
-        }
+        // Initialize once, thread-safely
+        let base = BASE_TIME.get_or_init(|| *instant);
+        instant.duration_since(*base).as_secs_f32()
     }
     
     /// Get current time as timestamp
@@ -38,7 +28,7 @@ pub mod time_convert {
     }
 }
 
-/// Time conversion utilities for Embassy
+/// Time conversion for Embassy RTOS
 #[cfg(feature = "embassy")]
 pub mod time_convert {
     use embassy_time::{Instant, Duration};
@@ -70,22 +60,11 @@ pub mod time_convert {
     }
 }
 
-/// Bare minimum time utilities for no_std without embassy
-#[cfg(not(any(feature = "std", feature = "embassy")))]
-pub mod time_convert {
-    use super::TimeStamp;
-    
-    /// Global counter for basic timing
-    static mut COUNTER: TimeStamp = 0.0;
-    
-    /// Get current time as timestamp (increments counter)
-    pub fn now() -> TimeStamp {
-        unsafe {
-            COUNTER += 0.001; // Increment by 1ms
-            COUNTER
-        }
-    }
-}
+// The std feature is enabled by default in Cargo.toml.
+// This error only occurs if someone explicitly disables default features
+// without enabling either std or embassy.
+#[cfg(not(any(feature = "desktop", feature = "embassy")))]
+compile_error!("Either the \"std\" or \"embassy\" feature must be enabled for this crate");
 
 /// IMU data containing accelerometer, gyroscope and optional magnetometer measurements
 #[derive(Debug, Clone)]

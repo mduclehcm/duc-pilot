@@ -30,12 +30,19 @@ impl ModelType {
         };
         
         // Validate output
-        if result.position.iter().any(|v| v.is_nan() || v.is_infinite()) || 
-           result.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) {
-            return Err(AhrsError::InvalidState);
-        }
+        let state_result = match result {
+            Ok(state) => {
+                if state.position.iter().any(|v| v.is_nan() || v.is_infinite()) || 
+                   state.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) {
+                    Err(AhrsError::InvalidState)
+                } else {
+                    Ok(state)
+                }
+            },
+            Err(e) => Err(e),
+        };
         
-        Ok(result)
+        state_result
     }
     
     /// Get the name of the model
@@ -155,10 +162,12 @@ impl Imm {
         }
         
         // Calculate mixing probabilities
-        self.update_mixing_probabilities();
+        if let Err(e) = self.update_mixing_probabilities() {
+            return Err(e);
+        }
         
         // Initialize mixed states
-        let mut mixed_states = vec![state.clone(); 3];
+        let mixed_states = vec![state.clone(); 3];
         
         // Step 1: Mixing (interaction)
         // Mix the states for each model based on mixing probabilities
@@ -166,6 +175,8 @@ impl Imm {
         // Step 2: Mode-matched filtering
         // Predict using each model
         let mut predicted_states = Vec::with_capacity(3);
+        let mut model_failure_indices = Vec::new();
+
         for (i, model) in self.models.iter().enumerate() {
             match model.predict(&mixed_states[i], dt) {
                 Ok(predicted) => {
@@ -174,11 +185,9 @@ impl Imm {
                 },
                 Err(e) => {
                     // If a model fails, use the input state instead
-                    // and reduce its probability
+                    // and mark for probability reduction
                     self.model_states[i] = state.clone();
-                    self.model_probs[i] *= 0.5;
-                    // Normalize probabilities
-                    self.normalize_probabilities();
+                    model_failure_indices.push(i);
                     
                     // Add the original state to predicted states for consistency
                     predicted_states.push(state.clone());
@@ -188,6 +197,16 @@ impl Imm {
                     eprintln!("Error in model {}: {:?}", i, e);
                 }
             }
+        }
+
+        // Now that we're done with the immutable borrow of self.models, we can modify probabilities
+        for i in &model_failure_indices {
+            self.model_probs[*i] *= 0.5;
+        }
+        
+        // Normalize probabilities if there were any failures
+        if !model_failure_indices.is_empty() {
+            self.normalize_probabilities();
         }
         
         // Update model probabilities based on likelihood
