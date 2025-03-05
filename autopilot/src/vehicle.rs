@@ -6,7 +6,6 @@ pub struct Vehicle {
     desired_attitude: Attitude,
     control_input: ControlInput,
     control_output: ControlOutput,
-    mode: u8,
     armed: bool,
 
     roll_angle_pid: PID,
@@ -27,20 +26,25 @@ impl Vehicle {
             ..Default::default()
         }
     }
+    // Update the input from the RC receiver
+    // This function is when the RC receiver sends a new input
+    // Embed: call in rc_input loop
+    // SITL: call in flight_axis loop
     pub fn update_rc_input(&mut self, rc_input: RcInput) {
         self.control_input = self.rc_mapper.map(rc_input);
     }
-    pub fn update_attitude(&mut self, attitude: Attitude) {
-        unimplemented!()
+
+    // Get the mapped RC input
+    pub fn get_rc_input(&self) -> &ControlInput {
+        &self.control_input
     }
+
     pub fn set_desired_attitude(&mut self, attitude: Attitude) {
-        unimplemented!()
+        self.desired_attitude = attitude;
     }
+
     pub fn get_attitude(&self) -> &Attitude {
-        unimplemented!()
-    }
-    pub fn get_rc_input(&self) -> &RcInput {
-        unimplemented!()
+        &self.current_attitude
     }
     pub fn get_pwm_output(&self) -> &[u16; 16] {
         unimplemented!()
