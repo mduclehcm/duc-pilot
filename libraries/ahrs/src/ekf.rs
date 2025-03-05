@@ -117,17 +117,19 @@ impl Ekf {
         // Input validation
         if dt <= 0.0 || dt.is_nan() {
             return Err(AhrsError::TimingError(format!(
-                "Invalid time step in EKF prediction: {}", dt
+                "Invalid time step in EKF prediction: {}",
+                dt
             )));
         }
-        
-        if imu_data.accel.iter().any(|v| v.is_nan() || v.is_infinite()) ||
-           imu_data.gyro.iter().any(|v| v.is_nan() || v.is_infinite()) {
+
+        if imu_data.accel.iter().any(|v| v.is_nan() || v.is_infinite())
+            || imu_data.gyro.iter().any(|v| v.is_nan() || v.is_infinite())
+        {
             return Err(AhrsError::SensorError(
-                "IMU data contains NaN or infinite values".into()
+                "IMU data contains NaN or infinite values".into(),
             ));
         }
-        
+
         let mut new_state = state.clone();
 
         // Extract gyro and accelerometer measurements
@@ -203,11 +205,7 @@ impl Ekf {
     }
 
     /// Predict the covariance matrix using the linearized system model
-    fn predict_covariance(
-        &mut self,
-        gyro_corrected: &na::Vector3<f32>,
-        dt: f32,
-    ) -> AhrsResult<()> {
+    fn predict_covariance(&mut self, gyro_corrected: &na::Vector3<f32>, dt: f32) -> AhrsResult<()> {
         // Create state transition matrix (F)
         let mut f = na::Matrix::<f32, na::Const<12>, na::Const<12>, na::ArrayStorage<f32, 12, 12>>::identity();
 
@@ -258,14 +256,24 @@ impl Ekf {
         gps_data: &GpsData,
     ) -> AhrsResult<StateVector> {
         // Input validation
-        if gps_data.position.iter().any(|v| v.is_nan() || v.is_infinite()) ||
-           gps_data.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) ||
-           gps_data.accuracy.iter().any(|v| v.is_nan() || v.is_infinite() || *v <= 0.0) {
+        if gps_data
+            .position
+            .iter()
+            .any(|v| v.is_nan() || v.is_infinite())
+            || gps_data
+                .velocity
+                .iter()
+                .any(|v| v.is_nan() || v.is_infinite())
+            || gps_data
+                .accuracy
+                .iter()
+                .any(|v| v.is_nan() || v.is_infinite() || *v <= 0.0)
+        {
             return Err(AhrsError::SensorError(
-                "GPS data contains invalid values".into()
+                "GPS data contains invalid values".into(),
             ));
         }
-        
+
         let mut new_state = state.clone();
 
         // Create measurement vector (GPS position and velocity)
@@ -438,13 +446,17 @@ impl Ekf {
         baro_data: &BaroData,
     ) -> AhrsResult<StateVector> {
         // Input validation
-        if baro_data.altitude.is_nan() || baro_data.altitude.is_infinite() ||
-           baro_data.accuracy.is_nan() || baro_data.accuracy.is_infinite() || baro_data.accuracy <= 0.0 {
+        if baro_data.altitude.is_nan()
+            || baro_data.altitude.is_infinite()
+            || baro_data.accuracy.is_nan()
+            || baro_data.accuracy.is_infinite()
+            || baro_data.accuracy <= 0.0
+        {
             return Err(AhrsError::SensorError(
-                "Barometer data contains invalid values".into()
+                "Barometer data contains invalid values".into(),
             ));
         }
-        
+
         let mut new_state = state.clone();
 
         // Create measurement (altitude is negative of down position in NED)

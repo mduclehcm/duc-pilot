@@ -90,30 +90,46 @@ pub type AhrsResult<T> = Result<T, AhrsError>;
 pub struct SensorUpdateRates {
     /// IMU update rate in Hz (if available)
     pub imu: Option<f32>,
-    
+
     /// GPS update rate in Hz (if available)
     pub gps: Option<f32>,
-    
+
     /// Barometer update rate in Hz (if available)
     pub baro: Option<f32>,
-    
+
     /// Timestamp of last IMU update
     pub imu_last_update: Option<f32>,
-    
+
     /// Timestamp of last GPS update
     pub gps_last_update: Option<f32>,
-    
+
     /// Timestamp of last barometer update
     pub baro_last_update: Option<f32>,
-    
+
     /// Time since last IMU update in seconds
     pub time_since_imu: Option<f32>,
-    
+
     /// Time since last GPS update in seconds
     pub time_since_gps: Option<f32>,
-    
+
     /// Time since last barometer update in seconds
     pub time_since_baro: Option<f32>,
+}
+
+impl Default for SensorUpdateRates {
+    fn default() -> Self {
+        Self {
+            imu: None,
+            gps: None,
+            baro: None,
+            imu_last_update: None,
+            gps_last_update: None,
+            baro_last_update: None,
+            time_since_imu: None,
+            time_since_gps: None,
+            time_since_baro: None,
+        }
+    }
 }
 
 /// State vector containing the complete vehicle state
@@ -169,6 +185,41 @@ impl StateVector {
     pub fn euler_angles(&self) -> na::Vector3<f32> {
         let euler = self.attitude.euler_angles();
         na::Vector3::new(euler.0, euler.1, euler.2)
+    }
+
+    /// Check if the state vector contains valid (non-NaN, non-infinite) values
+    pub fn is_valid(&self) -> bool {
+        !self.position.iter().any(|v| v.is_nan() || v.is_infinite()) &&
+        !self.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) &&
+        !self.accel_bias.iter().any(|v| v.is_nan() || v.is_infinite()) &&
+        !self.gyro_bias.iter().any(|v| v.is_nan() || v.is_infinite()) &&
+        // Check that quaternion components are valid
+        !self.attitude.into_inner().coords.iter().any(|v| v.is_nan() || v.is_infinite())
+    }
+
+    /// Get the magnitude of the position uncertainty
+    pub fn position_uncertainty(&self) -> f32 {
+        self.position_covariance.trace().sqrt()
+    }
+
+    /// Get the magnitude of the velocity uncertainty
+    pub fn velocity_uncertainty(&self) -> f32 {
+        self.velocity_covariance.trace().sqrt()
+    }
+
+    /// Get the magnitude of the attitude uncertainty in radians
+    pub fn attitude_uncertainty(&self) -> f32 {
+        self.attitude_covariance.trace().sqrt()
+    }
+
+    /// Transform a vector from body frame to NED frame
+    pub fn body_to_ned(&self, vector_body: &na::Vector3<f32>) -> na::Vector3<f32> {
+        self.attitude * vector_body
+    }
+
+    /// Transform a vector from NED frame to body frame
+    pub fn ned_to_body(&self, vector_ned: &na::Vector3<f32>) -> na::Vector3<f32> {
+        self.attitude.inverse() * vector_ned
     }
 }
 
@@ -230,22 +281,22 @@ pub struct Ahrs {
 
     /// Last IMU update timestamp in seconds
     last_imu_update: Option<f32>,
-    
+
     /// Last GPS update timestamp in seconds
     last_gps_update: Option<f32>,
-    
+
     /// Last barometer update timestamp in seconds
     last_baro_update: Option<f32>,
-    
+
     /// Recent IMU update intervals for rate calculation (seconds)
     imu_update_intervals: Vec<f32>,
-    
+
     /// Recent GPS update intervals for rate calculation (seconds)
     gps_update_intervals: Vec<f32>,
-    
+
     /// Recent barometer update intervals for rate calculation (seconds)
     baro_update_intervals: Vec<f32>,
-    
+
     /// Number of intervals to keep for rate calculation
     rate_window_size: usize,
 }
@@ -256,7 +307,7 @@ impl Ahrs {
         let state = StateVector::new();
         let ekf = ekf::Ekf::new(&config)?;
         let imm = imm::Imm::new(&config)?;
-        
+
         // Default window size for rate calculation
         const DEFAULT_RATE_WINDOW_SIZE: usize = 10;
 
@@ -281,7 +332,7 @@ impl Ahrs {
     pub fn update_imu(&mut self, imu_data: &sensors::ImuData) -> AhrsResult<()> {
         // Get timestamp
         let timestamp = imu_data.timestamp;
-        
+
         // Calculate time delta for prediction
         let dt = match self.last_update {
             Some(last_time) => timestamp - last_time,
@@ -315,21 +366,30 @@ impl Ahrs {
                 }
             }
         }
-        
+
         self.last_update = Some(timestamp);
         self.last_imu_update = Some(timestamp);
-        
+
         Ok(())
     }
 
     /// Update the filter with GPS measurements
     pub fn update_gps(&mut self, gps_data: &sensors::GpsData) -> AhrsResult<()> {
         // Validate input data
-        if gps_data.position.iter().any(|v| v.is_nan() || v.is_infinite()) ||
-           gps_data.velocity.iter().any(|v| v.is_nan() || v.is_infinite()) {
-            return Err(AhrsError::SensorError("GPS data contains NaN or infinite values".into()));
+        if gps_data
+            .position
+            .iter()
+            .any(|v| v.is_nan() || v.is_infinite())
+            || gps_data
+                .velocity
+                .iter()
+                .any(|v| v.is_nan() || v.is_infinite())
+        {
+            return Err(AhrsError::SensorError(
+                "GPS data contains NaN or infinite values".into(),
+            ));
         }
-        
+
         // Update EKF with GPS data
         let updated_state = self.ekf.update_gps(&self.state, gps_data)?;
         self.state = updated_state;
@@ -350,7 +410,7 @@ impl Ahrs {
                 }
             }
         }
-        
+
         self.last_gps_update = Some(timestamp);
 
         Ok(())
@@ -360,9 +420,11 @@ impl Ahrs {
     pub fn update_baro(&mut self, baro_data: &sensors::BaroData) -> AhrsResult<()> {
         // Validate input data
         if baro_data.altitude.is_nan() || baro_data.altitude.is_infinite() {
-            return Err(AhrsError::SensorError("Barometer data contains NaN or infinite values".into()));
+            return Err(AhrsError::SensorError(
+                "Barometer data contains NaN or infinite values".into(),
+            ));
         }
-        
+
         // Update EKF with barometer data
         let updated_state = self.ekf.update_baro(&self.state, baro_data)?;
         self.state = updated_state;
@@ -380,12 +442,12 @@ impl Ahrs {
                 }
             }
         }
-        
+
         self.last_baro_update = Some(timestamp);
 
         Ok(())
     }
-    
+
     /// Get the current IMU update rate in Hz
     ///
     /// This method calculates the average update rate over the last several updates
@@ -394,7 +456,7 @@ impl Ahrs {
     pub fn imu_update_rate(&self) -> Option<f32> {
         self.calculate_update_rate(&self.imu_update_intervals)
     }
-    
+
     /// Get the current GPS update rate in Hz
     ///
     /// This method calculates the average update rate over the last several updates
@@ -403,7 +465,7 @@ impl Ahrs {
     pub fn gps_update_rate(&self) -> Option<f32> {
         self.calculate_update_rate(&self.gps_update_intervals)
     }
-    
+
     /// Get the current barometer update rate in Hz
     ///
     /// This method calculates the average update rate over the last several updates
@@ -412,7 +474,7 @@ impl Ahrs {
     pub fn baro_update_rate(&self) -> Option<f32> {
         self.calculate_update_rate(&self.baro_update_intervals)
     }
-    
+
     /// Get a summary of all sensor update rates and timing information
     ///
     /// This returns a `SensorUpdateRates` struct containing:
@@ -435,17 +497,17 @@ impl Ahrs {
             time_since_baro: self.time_since_last_baro_update(),
         }
     }
-    
+
     /// Calculate the update rate from a list of intervals
     fn calculate_update_rate(&self, intervals: &[f32]) -> Option<f32> {
         if intervals.is_empty() {
             return None;
         }
-        
+
         // Calculate average interval
         let sum: f32 = intervals.iter().sum();
         let avg_interval = sum / intervals.len() as f32;
-        
+
         // Convert to rate (Hz)
         if avg_interval > 0.0 {
             Some(1.0 / avg_interval)
@@ -453,7 +515,7 @@ impl Ahrs {
             None
         }
     }
-    
+
     /// Get time since the last IMU update in seconds
     ///
     /// This method calculates the time elapsed since the last IMU update by comparing
@@ -465,11 +527,11 @@ impl Ahrs {
                 // Get current time using the sensors time utility
                 let current_time = sensors::time_convert::now();
                 Some(current_time - last_time)
-            },
+            }
             None => None,
         }
     }
-    
+
     /// Get time since the last GPS update in seconds
     ///
     /// This method calculates the time elapsed since the last GPS update by comparing
@@ -481,11 +543,11 @@ impl Ahrs {
                 // Get current time using the sensors time utility
                 let current_time = sensors::time_convert::now();
                 Some(current_time - last_time)
-            },
+            }
             None => None,
         }
     }
-    
+
     /// Get time since the last barometer update in seconds
     ///
     /// This method calculates the time elapsed since the last barometer update by comparing
@@ -497,139 +559,8 @@ impl Ahrs {
                 // Get current time using the sensors time utility
                 let current_time = sensors::time_convert::now();
                 Some(current_time - last_time)
-            },
+            }
             None => None,
         }
-    }
-    
-    /// Set the window size for update rate calculations
-    ///
-    /// This configures how many recent sensor updates are used to calculate
-    /// the average update rate. A larger window provides more stable rate estimates
-    /// but responds more slowly to changes in the actual update rate.
-    ///
-    /// The method ensures that the internal buffers are adjusted accordingly.
-    /// If the new window size is smaller than the current one, the oldest
-    /// elements are removed to match the new size.
-    ///
-    /// # Arguments
-    ///
-    /// * `window_size` - The number of updates to use for rate calculation.
-    ///   Must be greater than 0. If 0 is provided, the method has no effect.
-    pub fn set_rate_window_size(&mut self, window_size: usize) {
-        if window_size > 0 {
-            self.rate_window_size = window_size;
-            
-            // Resize vectors if needed
-            if self.imu_update_intervals.len() > window_size {
-                self.imu_update_intervals.drain(0..self.imu_update_intervals.len() - window_size);
-            }
-            if self.gps_update_intervals.len() > window_size {
-                self.gps_update_intervals.drain(0..self.gps_update_intervals.len() - window_size);
-            }
-            if self.baro_update_intervals.len() > window_size {
-                self.baro_update_intervals.drain(0..self.baro_update_intervals.len() - window_size);
-            }
-        }
-    }
-
-    /// Get the current state estimate
-    pub fn state(&self) -> &StateVector {
-        &self.state
-    }
-
-    /// Get the most likely model name from the IMM
-    pub fn most_likely_model_name(&self) -> &'static str {
-        self.imm.most_likely_model_name()
-    }
-
-    /// Check if the filter is healthy
-    ///
-    /// Performs a comprehensive health assessment of the AHRS system using multiple criteria:
-    ///
-    /// 1. **Covariance Analysis**: Checks position, velocity, and attitude covariance traces
-    ///    against adaptive thresholds that become more strict when GPS is available.
-    ///
-    /// 2. **Eigenvalue Analysis**: Calculates maximum eigenvalues of each covariance matrix
-    ///    using power iteration for a more precise measure of uncertainty in the worst direction.
-    ///
-    /// 3. **Time Health**: Verifies that the filter has received updates, which could be
-    ///    extended to check the time since the last update against a maximum allowable delay.
-    ///
-    /// 4. **State Validity**: Ensures no state values contain NaN or infinite values,
-    ///    which would indicate numerical instability or filter divergence.
-    ///
-    /// 5. **Model Probability**: Checks that the most likely IMM model has a reasonable
-    ///    probability (>20%), indicating confidence in the motion model selection.
-    ///
-    /// Returns `true` if all health criteria are met, indicating the filter is functioning
-    /// correctly and estimates can be trusted. Returns `false` if any health check fails.
-    pub fn is_healthy(&self) -> bool {
-        // Check covariance values
-        let pos_trace = self.state.position_covariance.trace();
-        let vel_trace = self.state.velocity_covariance.trace();
-        let att_trace = self.state.attitude_covariance.trace();
-
-        // Get maximum eigenvalues for better uncertainty assessment
-        let pos_max_eigenval = utils::max_eigenvalue(&self.state.position_covariance);
-        let vel_max_eigenval = utils::max_eigenvalue(&self.state.velocity_covariance);
-        let att_max_eigenval = utils::max_eigenvalue(&self.state.attitude_covariance);
-
-        // Check time since last update (if available)
-        let time_health = match self.last_update {
-            Some(_last_time) => {
-                // If we have a current time source, we could check against it
-                // For now, we'll assume it's healthy if we have any update
-                // In a real system, you would compare against current time:
-                // let current_time = get_current_time();
-                // let time_diff = current_time - last_time;
-                // time_diff < MAX_TIME_WITHOUT_UPDATE
-                true
-            }
-            None => false, // No updates received yet
-        };
-
-        // Check if any state values are NaN or infinite
-        let state_valid = !self
-            .state
-            .position
-            .iter()
-            .any(|v| v.is_nan() || v.is_infinite())
-            && !self
-                .state
-                .velocity
-                .iter()
-                .any(|v| v.is_nan() || v.is_infinite())
-            && !self
-                .state
-                .attitude
-                .into_inner()
-                .coords
-                .iter()
-                .any(|v| v.is_nan() || v.is_infinite());
-
-        // Check if the most likely model has a reasonable probability
-        // (helps detect if the IMM filter is uncertain about which model to use)
-        let most_likely_idx = self.imm.most_likely_model();
-        let model_prob_health = self.imm.model_probability(most_likely_idx) > 0.2;
-
-        // Adaptive thresholds based on GPS availability
-        let (pos_threshold, vel_threshold, att_threshold) = if self.gps_available {
-            (100.0, 10.0, 1.0) // Tighter thresholds with GPS
-        } else {
-            (200.0, 20.0, 2.0) // Looser thresholds without GPS
-        };
-
-        // Combined health check
-        let covariance_health =
-            pos_trace < pos_threshold && vel_trace < vel_threshold && att_trace < att_threshold;
-
-        // Eigenvalue check (more strict than trace)
-        let eigenvalue_health = pos_max_eigenval < pos_threshold / 2.0
-            && vel_max_eigenval < vel_threshold / 2.0
-            && att_max_eigenval < att_threshold / 2.0;
-
-        // Final health determination
-        state_valid && time_health && covariance_health && eigenvalue_health && model_prob_health
     }
 }
