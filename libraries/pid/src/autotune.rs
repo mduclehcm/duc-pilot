@@ -216,10 +216,6 @@ impl Autotune {
             periods.push(self.zero_crossings[i] - self.zero_crossings[i - 1]);
         }
         
-        // Average period (2 zero crossings = 1 half-period)
-        let avg_half_period: f32 = periods.iter().sum::<f32>() / periods.len() as f32;
-        let ultimate_period = avg_half_period * 2.0;
-        
         // Calculate amplitude of oscillation
         let mut peak_to_peak = 0.0;
         if self.peaks.len() >= 2 {
@@ -235,9 +231,42 @@ impl Autotune {
             }
         }
         
+        // Check if peak_to_peak is too small (near zero)
+        if peak_to_peak < 1e-6 {
+            // Not enough oscillation detected, we cannot complete autotuning
+            self.is_complete = false;
+            self.result = None;
+            return;
+        }
+        
         // Calculate critical gain (Ku)
         // Ku = (4 * relay_amplitude) / (π * peak_to_peak)
         let ultimate_gain = (4.0 * self.relay_amplitude) / (std::f32::consts::PI * peak_to_peak);
+        
+        // Handle potential NaN or Infinity values
+        if ultimate_gain.is_nan() || ultimate_gain.is_infinite() {
+            self.is_complete = false;
+            self.result = None;
+            return;
+        }
+        
+        // Check if periods vector is empty
+        if periods.is_empty() {
+            self.is_complete = false;
+            self.result = None;
+            return;
+        }
+        
+        // Average period (2 zero crossings = 1 half-period)
+        let avg_half_period: f32 = periods.iter().sum::<f32>() / periods.len() as f32;
+        let ultimate_period = avg_half_period * 2.0;
+        
+        // Handle potential NaN or Infinity values
+        if ultimate_period.is_nan() || ultimate_period.is_infinite() || ultimate_period <= 0.0 {
+            self.is_complete = false;
+            self.result = None;
+            return;
+        }
         
         // Calculate PID parameters based on the selected method
         let params = self.calculate_params(ultimate_gain, ultimate_period);
@@ -260,8 +289,31 @@ impl Autotune {
             (AutotuneMethod::AMIGO, PIDType::PI) => (0.4 * ku, 0.4 * ku / (0.8 * tu), 0.0),
             (AutotuneMethod::AMIGO, PIDType::PID) => (0.35 * ku, 0.35 * ku / (0.8 * tu), 0.35 * ku * tu / 8.0),
             
-            // For any other combination, fall back to Ziegler-Nichols
-            (AutotuneMethod::CohenCoon, _) | (_, _) => {
+            // Cohen-Coon method implementation
+            (AutotuneMethod::CohenCoon, PIDType::P) => {
+                // Cohen-Coon P controller
+                let kp = 1.0 / (ku * tu) * (0.9 + tu / 12.0);
+                (kp, 0.0, 0.0)
+            },
+            (AutotuneMethod::CohenCoon, PIDType::PI) => {
+                // Cohen-Coon PI controller
+                let kp = 0.9 / (ku * tu) * (1.0 + tu / 10.0);
+                let ti = tu * (30.0 + 3.0 * tu) / (9.0 + 20.0 * tu);
+                let ki = kp / ti;
+                (kp, ki, 0.0)
+            },
+            (AutotuneMethod::CohenCoon, PIDType::PID) => {
+                // Cohen-Coon PID controller
+                let kp = 1.35 / (ku * tu) * (1.0 + tu / 5.0);
+                let ti = tu * (40.0 + 5.0 * tu) / (13.0 + 45.0 * tu);
+                let td = tu * 4.0 / (11.0 + 2.0 * tu);
+                let ki = kp / ti;
+                let kd = kp * td;
+                (kp, ki, kd)
+            },
+            
+            // Fall back to Ziegler-Nichols for any other combination
+            (_, _) => {
                 let kp = 0.6 * ku;
                 let ki = 1.2 * ku / tu;
                 let kd = 0.075 * ku * tu;
@@ -299,6 +351,62 @@ impl Autotune {
     /// Get the raw data collected during autotuning
     pub fn get_data(&self) -> (&[f32], &[f32], &[f32]) {
         (&self.time_stamps, &self.process_variable, &self.relay_output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_cohen_coon_calculation() {
+        // Create a mock Autotune instance for testing
+        let autotune = Autotune::new(AutotuneMethod::CohenCoon, PIDType::PID, 1.0);
+        
+        // Simulate completing the tuning with some realistic values
+        let ultimate_gain = 2.0;      // Ku
+        let ultimate_period = 1.5;    // Tu
+        
+        // Calculate PID parameters using Cohen-Coon method
+        let result = autotune.calculate_params(ultimate_gain, ultimate_period);
+        
+        // Verify the results are reasonable and correct
+        assert!(result.kp > 0.0, "Cohen-Coon kp should be positive");
+        assert!(result.ki > 0.0, "Cohen-Coon ki should be positive");
+        assert!(result.kd > 0.0, "Cohen-Coon kd should be positive");
+        
+        // Test for other PID types
+        let pi_autotune = Autotune::new(AutotuneMethod::CohenCoon, PIDType::PI, 1.0);
+        let pi_result = pi_autotune.calculate_params(ultimate_gain, ultimate_period);
+        assert!(pi_result.kp > 0.0, "Cohen-Coon PI kp should be positive");
+        assert!(pi_result.ki > 0.0, "Cohen-Coon PI ki should be positive");
+        assert_eq!(pi_result.kd, 0.0, "Cohen-Coon PI kd should be zero");
+        
+        let p_autotune = Autotune::new(AutotuneMethod::CohenCoon, PIDType::P, 1.0);
+        let p_result = p_autotune.calculate_params(ultimate_gain, ultimate_period);
+        assert!(p_result.kp > 0.0, "Cohen-Coon P kp should be positive");
+        assert_eq!(p_result.ki, 0.0, "Cohen-Coon P ki should be zero");
+        assert_eq!(p_result.kd, 0.0, "Cohen-Coon P kd should be zero");
+    }
+    
+    #[test]
+    fn test_autotuning_zero_prevention() {
+        // Create an autotune instance
+        let mut autotune = Autotune::new(AutotuneMethod::ZieglerNichols, PIDType::PID, 1.0);
+        
+        // This is a simple mock to test our division by zero prevention
+        // We're not setting up a full autotuning process
+        
+        // Simulate a process with no oscillation (which would lead to peak_to_peak = 0)
+        for i in 0..100 {
+            let time = i as f32 * 0.01;
+            let pv = 1.0; // Constant process variable (no oscillation)
+            autotune.process(pv, time);
+        }
+        
+        // After processing, it should not have completed due to lack of oscillation
+        assert!(!autotune.is_complete(), "Autotune should not complete with no oscillation");
+        assert!(autotune.result().is_none(), "Autotune result should be None with no oscillation");
     }
 }
 

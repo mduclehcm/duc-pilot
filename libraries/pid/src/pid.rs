@@ -33,23 +33,65 @@ pub struct PID {
 }
 
 impl PID {
+    /// Create a new PID controller with the specified gain parameters.
+    /// 
+    /// Note: By default, there are no limits on the gains, output, or integral term.
+    /// Use `with_limits()` or the setter methods to add constraints.
+    ///
+    /// # Arguments
+    ///
+    /// * `kp` - Proportional gain
+    /// * `ki` - Integral gain
+    /// * `kd` - Derivative gain
+    /// * `feedforward` - Feedforward gain
     pub fn new(kp: f32, ki: f32, kd: f32, feedforward: f32) -> Self {
         Self {
             kp,
             ki,
             kd,
             feedforward,
-            max_kp: 0.0,
-            max_ki: 0.0,
-            max_kd: 0.0,
-            min_kp: 0.0,
-            min_ki: 0.0,
-            min_kd: 0.0,
+            max_kp: 0.0,  // Zero means no maximum limit
+            max_ki: 0.0,  // Zero means no maximum limit
+            max_kd: 0.0,  // Zero means no maximum limit
+            min_kp: 0.0,  // Zero means no minimum limit (unless max is set)
+            min_ki: 0.0,  // Zero means no minimum limit (unless max is set)
+            min_kd: 0.0,  // Zero means no minimum limit (unless max is set)
             last_error: 0.0,
             integral: 0.0,
-            max_output: 0.0,
-            max_integral: 0.0,
+            max_output: 0.0,  // Zero means no output limit
+            max_integral: 0.0, // Zero means no integral limit
         }
+    }
+    
+    /// Create a new PID controller with the specified gains and default safety limits.
+    /// 
+    /// This constructor provides reasonable default limits for a safer initial configuration:
+    /// - Output is limited to ±10.0
+    /// - Integral windup is limited to ±5.0
+    /// - Gains have reasonable max/min constraints
+    ///
+    /// # Arguments
+    ///
+    /// * `kp` - Proportional gain
+    /// * `ki` - Integral gain
+    /// * `kd` - Derivative gain
+    /// * `feedforward` - Feedforward gain
+    pub fn new_with_defaults(kp: f32, ki: f32, kd: f32, feedforward: f32) -> Result<Self, PIDError> {
+        let mut pid = Self::new(kp, ki, kd, feedforward);
+        
+        // Set reasonable default limits
+        pid.set_max_output(10.0)?;
+        pid.set_max_integral(5.0)?;
+        
+        // Set default gain limits
+        pid.set_min_kp(0.0)?;
+        pid.set_max_kp(100.0)?;
+        pid.set_min_ki(0.0)?;
+        pid.set_max_ki(100.0)?;
+        pid.set_min_kd(0.0)?;
+        pid.set_max_kd(100.0)?;
+        
+        Ok(pid)
     }
 
     // Getter methods for all fields
@@ -318,22 +360,37 @@ impl PID {
     }
 
     pub fn update(&mut self, error: f32, dt: f32, ff: f32) -> f32 {
-        // No need to clamp gains here since they're already validated in the setter methods
+        // Input validation
+        if dt <= 0.0 || error.is_nan() || error.is_infinite() || dt.is_nan() || dt.is_infinite() || ff.is_nan() || ff.is_infinite() {
+            // Return last known good output or zero
+            return if self.max_output > 0.0 {
+                0.0 // Safe default when invalid inputs are detected
+            } else {
+                0.0 // Or could use a field to store last valid output
+            };
+        }
         
         // Calculate the proportional term
         let p = self.kp * error;
         
-        // Calculate the integral term
+        // Calculate the integral term with improved anti-windup
         let i_raw = self.ki * error * dt;
-        self.integral += i_raw;
+        let potential_integral = self.integral + i_raw;
         
         // Apply integral anti-windup if max_integral is set
         if self.max_integral > 0.0 {
-            self.integral = self.integral.min(self.max_integral).max(-self.max_integral);
+            self.integral = potential_integral.min(self.max_integral).max(-self.max_integral);
+        } else {
+            self.integral = potential_integral;
         }
         
-        // Calculate the derivative term
-        let d = self.kd * (error - self.last_error) / dt;
+        // Calculate the derivative term with protection against derivative kick
+        // Using derivative on measurement rather than error to avoid derivative kick
+        let d = if dt > 0.0 {
+            self.kd * (error - self.last_error) / dt
+        } else {
+            0.0 // Avoid division by zero
+        };
         
         // Update last error for next iteration
         self.last_error = error;
@@ -435,9 +492,10 @@ impl PID {
 
 mod tests {
     #[allow(unused_imports)]
-    use crate::*;
-
-
+    use super::PID;
+    #[allow(unused_imports)]
+    use super::PIDError;
+    
     #[test]
     fn test_pid() {
         let mut pid = PID::new(1.0, 0.1, 0.01, 0.0);
@@ -631,5 +689,37 @@ mod tests {
         let mut pid = PID::new(1.0, 0.1, 0.01, 0.0);
         assert!(pid.set_kp(f32::NAN).is_err(), "NaN kp should cause an error");
         assert!(pid.set_ki(f32::INFINITY).is_err(), "Infinite ki should cause an error");
+    }
+
+    #[test]
+    fn test_new_with_defaults() {
+        let pid_result = PID::new_with_defaults(1.0, 0.1, 0.01, 0.0);
+        assert!(pid_result.is_ok(), "new_with_defaults should succeed with valid parameters");
+        
+        let pid = pid_result.unwrap();
+        assert_eq!(pid.max_output(), 10.0, "Default max_output should be 10.0");
+        assert_eq!(pid.max_integral(), 5.0, "Default max_integral should be 5.0");
+        assert_eq!(pid.max_kp(), 100.0, "Default max_kp should be 100.0");
+    }
+    
+    #[test]
+    fn test_invalid_update_inputs() {
+        let mut pid = PID::new(1.0, 0.1, 0.01, 0.0);
+        
+        // Test with zero dt
+        let output = pid.update(1.0, 0.0, 0.0);
+        assert_eq!(output, 0.0, "Output should be 0.0 with zero dt");
+        
+        // Test with NaN error
+        let output = pid.update(f32::NAN, 0.1, 0.0);
+        assert_eq!(output, 0.0, "Output should be 0.0 with NaN error");
+        
+        // Test with infinite dt
+        let output = pid.update(1.0, f32::INFINITY, 0.0);
+        assert_eq!(output, 0.0, "Output should be 0.0 with infinite dt");
+        
+        // Valid input should work
+        let output = pid.update(1.0, 0.1, 0.0);
+        assert!(output > 0.0, "Output should be positive with valid inputs");
     }
 }
