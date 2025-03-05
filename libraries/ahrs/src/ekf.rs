@@ -654,4 +654,21 @@ impl Ekf {
 
         Ok(new_state)
     }
+
+    /// Set process noise factor for specific state indices
+    /// 
+    /// This allows different motion models to configure process noise
+    /// based on their specific dynamics.
+    /// 
+    /// # Arguments
+    /// * `start_idx` - Starting index in the state vector (inclusive)
+    /// * `end_idx` - Ending index in the state vector (inclusive)
+    /// * `factor` - Scaling factor to apply to process noise
+    pub fn set_process_noise_factor(&mut self, start_idx: usize, end_idx: usize, factor: f32) {
+        for i in start_idx..=end_idx {
+            if i < STATE_DIM {
+                self.process_noise[(i, i)] *= factor;
+            }
+        }
+    }
 }

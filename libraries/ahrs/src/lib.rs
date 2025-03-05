@@ -56,6 +56,7 @@
 
 use nalgebra as na;
 use thiserror::Error;
+use crate::imm::NUM_MODELS;
 
 pub mod ekf;
 pub mod imm;
@@ -236,6 +237,12 @@ pub struct AhrsConfig {
     pub sensor_noise: SensorNoise,
 
     /// IMM model weights
+    /// Vector of weights for each model in the IMM algorithm:
+    /// [0] = Constant Velocity Model
+    /// [1] = Constant Acceleration Model
+    /// [2] = Coordinated Turn Model
+    /// [3] = Energy-Based Model (for fixed-wing aircraft pitch-altitude-speed modeling)
+    /// If fewer than NUM_MODELS weights are provided, defaults to equal weights (1/NUM_MODELS each)
     pub model_weights: Vec<f32>,
 }
 
@@ -270,9 +277,6 @@ pub struct Ahrs {
     /// Last update timestamp in seconds
     last_update: Option<f32>,
 
-    /// EKF implementation from ekf module
-    ekf: ekf::Ekf,
-
     /// IMM implementation from imm module
     imm: imm::Imm,
 
@@ -305,7 +309,8 @@ impl Ahrs {
     /// Create a new AHRS instance with the given configuration
     pub fn new(config: AhrsConfig) -> AhrsResult<Self> {
         let state = StateVector::new();
-        let ekf = ekf::Ekf::new(&config)?;
+        
+        // Initialize the IMM - it will internally create and manage the individual EKF instances
         let imm = imm::Imm::new(&config)?;
 
         // Default window size for rate calculation
@@ -315,7 +320,6 @@ impl Ahrs {
             state,
             config,
             last_update: None,
-            ekf,
             imm,
             gps_available: false,
             last_imu_update: None,
@@ -344,14 +348,10 @@ impl Ahrs {
             return Err(AhrsError::TimingError(format!("Invalid time step: {}", dt)));
         }
 
-        // Prediction step using EKF
-        let updated_state = self.ekf.predict(&self.state, imu_data, dt)?;
-        self.state = updated_state;
-
-        // Predict using IMM
-        self.imm.predict(&self.state, dt)?;
-
-        // Combine the states from all models
+        // Run IMM predict step - this handles prediction for all internal models
+        self.imm.predict(imu_data, dt)?;
+        
+        // Get the combined state from IMM - this is now our system state
         self.state = self.imm.combine_states();
 
         // Track IMU update rate
@@ -390,9 +390,12 @@ impl Ahrs {
             ));
         }
 
-        // Update EKF with GPS data
-        let updated_state = self.ekf.update_gps(&self.state, gps_data)?;
-        self.state = updated_state;
+        // Update using IMM - this handles updates for all internal models
+        // and updates the model probabilities
+        self.imm.update_gps(gps_data)?;
+        
+        // Get the combined state from IMM after the update
+        self.state = self.imm.combine_states();
 
         // Mark GPS as available
         self.gps_available = true;
@@ -425,9 +428,12 @@ impl Ahrs {
             ));
         }
 
-        // Update EKF with barometer data
-        let updated_state = self.ekf.update_baro(&self.state, baro_data)?;
-        self.state = updated_state;
+        // Update using IMM - this handles updates for all internal models
+        // and updates the model probabilities
+        self.imm.update_baro(baro_data)?;
+        
+        // Get the combined state from IMM after the update
+        self.state = self.imm.combine_states();
 
         // Track barometer update rate
         let timestamp = baro_data.timestamp;

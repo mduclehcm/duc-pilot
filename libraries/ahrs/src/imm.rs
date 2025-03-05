@@ -1,361 +1,594 @@
-use crate::models::{
-    ConstantAccelerationModel, ConstantVelocityModel, CoordinatedTurnModel, MotionModel,
-};
+use crate::models::{ModelFilter, create_model_filters, ModelFilterEnum};
+use crate::sensors::{BaroData, GpsData, ImuData};
 use crate::{AhrsConfig, AhrsError, AhrsResult, StateVector};
 use nalgebra as na;
+use std::fmt;
 
-/// Enum to represent the different motion models
-/// This allows for stack allocation of the models
-pub enum ModelType {
-    /// Constant velocity model
-    CV(ConstantVelocityModel),
+/// The number of model filters used in the IMM
+pub const NUM_MODELS: usize = 4;
 
-    /// Constant acceleration model
-    CA(ConstantAccelerationModel),
-
-    /// Coordinated turn model
-    CT(CoordinatedTurnModel),
-}
-
-impl ModelType {
-    /// Predict the state using this model
-    pub fn predict(&self, state: &StateVector, dt: f32) -> AhrsResult<StateVector> {
-        // Validate input
-        if dt <= 0.0 || dt.is_nan() {
-            return Err(AhrsError::TimingError(format!("Invalid time step: {}", dt)));
-        }
-
-        let result = match self {
-            ModelType::CV(model) => model.predict(state, dt),
-            ModelType::CA(model) => model.predict(state, dt),
-            ModelType::CT(model) => model.predict(state, dt),
-        };
-
-        // Validate output
-        let state_result = match result {
-            Ok(state) => {
-                if state.position.iter().any(|v| v.is_nan() || v.is_infinite())
-                    || state.velocity.iter().any(|v| v.is_nan() || v.is_infinite())
-                {
-                    Err(AhrsError::InvalidState)
-                } else {
-                    Ok(state)
-                }
-            }
-            Err(e) => Err(e),
-        };
-
-        state_result
-    }
-
-    /// Get the name of the model
-    pub fn name(&self) -> &'static str {
-        match self {
-            ModelType::CV(model) => model.name(),
-            ModelType::CA(model) => model.name(),
-            ModelType::CT(model) => model.name(),
-        }
-    }
-}
-
-/// Interactive Multiple Model (IMM) implementation
-/// Uses stack allocation for the three motion models
+/// Standard Interacting Multiple Model (IMM) filter implementation
+/// This implementation follows the standard IMM algorithm:
+/// 1. Interaction/Mixing: Compute mixed initial conditions for each filter
+/// 2. Filtering: Apply each filter to its mixed initial state
+/// 3. Mode probability update: Update the probability of each model
+/// 4. Combination: Combine state estimates and covariances across models
 pub struct Imm {
-    /// Motion models - fixed array of 3 models
-    models: [ModelType; 3],
+    /// The model filters - fixed array of motion models using stack allocation
+    model_filters: [ModelFilterEnum; NUM_MODELS],
 
     /// Model probabilities
-    model_probs: [f32; 3],
+    model_probs: [f32; NUM_MODELS],
 
-    /// Model transition matrix - 3x3 fixed size
-    transition_matrix: [[f32; 3]; 3],
+    /// Model transition matrix - 4x4 matrix of transition probabilities
+    transition_matrix: [[f32; NUM_MODELS]; NUM_MODELS],
 
-    /// Mixing probabilities - 3x3 fixed size
-    mixing_probs: [[f32; 3]; 3],
+    /// Mixing probabilities - 4x4 matrix
+    mixing_probs: [[f32; NUM_MODELS]; NUM_MODELS],
 
-    /// State vectors for each model
-    model_states: [StateVector; 3],
+    /// Mixed states for each model
+    mixed_states: [StateVector; NUM_MODELS],
+    
+    /// Flag indicating if the filter has been initialized
+    initialized: bool,
+    
+    /// Minimum allowed model probability
+    min_probability: f32,
 }
 
 impl Imm {
-    /// Create a new IMM instance
+    /// Create a new IMM instance with the standard model set
     pub fn new(config: &AhrsConfig) -> AhrsResult<Self> {
-        // Create the three models directly on the stack
-        let cv_model = ConstantVelocityModel::new(
-            0.5,  // pos_noise
-            0.1,  // vel_noise
-            0.01, // att_noise
-            config.process_noise.gyro_bias_noise,
-            config.process_noise.accel_bias_noise,
-        );
-
-        let ca_model = ConstantAccelerationModel::new(
-            1.0,  // pos_noise
-            0.2,  // vel_noise
-            0.1,  // acc_noise
-            0.01, // att_noise
-            config.process_noise.gyro_bias_noise,
-            config.process_noise.accel_bias_noise,
-        );
-
-        let ct_model = CoordinatedTurnModel::new(
-            1.0,  // pos_noise
-            0.2,  // vel_noise
-            0.05, // turn_rate_noise
-            0.01, // att_noise
-        );
-
-        // Create models array
-        let models = [
-            ModelType::CV(cv_model),
-            ModelType::CA(ca_model),
-            ModelType::CT(ct_model),
-        ];
-
+        // Create model filters
+        let model_filters = create_model_filters(config)?;
+        
         // Initialize model probabilities
-        let mut model_probs = [0.0; 3];
-        if config.model_weights.len() >= 3 {
+        let mut model_probs = [1.0 / (NUM_MODELS as f32); NUM_MODELS]; // Default to equal probabilities
+        
+        // If model weights are provided in config, use them
+        if config.model_weights.len() >= NUM_MODELS {
             // Normalize the provided weights
-            let sum: f32 = config.model_weights.iter().take(3).sum();
+            let sum: f32 = config.model_weights.iter().take(NUM_MODELS).sum();
             if sum > 0.0 {
-                for (i, weight) in config.model_weights.iter().enumerate().take(3) {
-                    model_probs[i] = weight / sum;
+                for i in 0..NUM_MODELS {
+                    model_probs[i] = config.model_weights[i] / sum;
                 }
-            } else {
-                // Default equal probabilities if sum is 0 or negative
-                model_probs = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
             }
-        } else {
-            // Default equal probabilities if not enough weights provided
-            model_probs = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
         }
-
+        
         // Initialize transition matrix with default values
         // This represents the probability of switching from model i to model j
-        let transition_matrix = [
-            [0.95, 0.025, 0.025], // From CV to [CV, CA, CT]
-            [0.025, 0.95, 0.025], // From CA to [CV, CA, CT]
-            [0.025, 0.025, 0.95], // From CT to [CV, CA, CT]
-        ];
-
-        // Initialize mixing probabilities
-        let mixing_probs = [[0.0; 3]; 3];
-
-        // Initialize model states
-        let model_states = [StateVector::new(), StateVector::new(), StateVector::new()];
-
+        let mut transition_matrix = [[0.0; NUM_MODELS]; NUM_MODELS];
+        
+        // Default: high probability of staying in same model, low probability of transition
+        let stay_prob = 0.85;
+        let transition_prob = (1.0 - stay_prob) / (NUM_MODELS as f32 - 1.0);
+        
+        for i in 0..NUM_MODELS {
+            for j in 0..NUM_MODELS {
+                if i == j {
+                    transition_matrix[i][j] = stay_prob;
+                } else {
+                    transition_matrix[i][j] = transition_prob;
+                }
+            }
+        }
+        
+        // Initialize mixing probabilities matrix
+        let mixing_probs = [[0.0; NUM_MODELS]; NUM_MODELS];
+        
+        // Initialize each model with a default state
+        let default_state = StateVector::default();
+        let mixed_states = [default_state.clone(), default_state.clone(), 
+                          default_state.clone(), default_state.clone()];
+        
         Ok(Self {
-            models,
+            model_filters,
             model_probs,
             transition_matrix,
             mixing_probs,
-            model_states,
+            mixed_states,
+            initialized: false,
+            min_probability: 0.001, // Default minimum probability
         })
     }
-
-    /// Predict the state using all models
-    pub fn predict(&mut self, state: &StateVector, dt: f32) -> AhrsResult<Vec<StateVector>> {
-        // Validate input
-        if dt <= 0.0 || dt.is_nan() {
-            return Err(AhrsError::TimingError(format!("Invalid time step: {}", dt)));
+    
+    /// Initialize the IMM with an initial state
+    pub fn initialize(&mut self, initial_state: &StateVector) -> AhrsResult<()> {
+        // Initialize each filter with the initial state
+        for filter in &mut self.model_filters {
+            filter.initialize(initial_state)?;
         }
-
-        // Calculate mixing probabilities
-        if let Err(e) = self.update_mixing_probabilities() {
-            return Err(e);
-        }
-
-        // Initialize mixed states
-        let mixed_states = vec![state.clone(); 3];
-
-        // Step 1: Mixing (interaction)
-        // Mix the states for each model based on mixing probabilities
-
-        // Step 2: Mode-matched filtering
-        // Predict using each model
-        let mut predicted_states = Vec::with_capacity(3);
-        let mut model_failure_indices = Vec::new();
-
-        for (i, model) in self.models.iter().enumerate() {
-            match model.predict(&mixed_states[i], dt) {
-                Ok(predicted) => {
-                    self.model_states[i] = predicted.clone();
-                    predicted_states.push(predicted);
-                }
-                Err(e) => {
-                    // If a model fails, use the input state instead
-                    // and mark for probability reduction
-                    self.model_states[i] = state.clone();
-                    model_failure_indices.push(i);
-
-                    // Add the original state to predicted states for consistency
-                    predicted_states.push(state.clone());
-
-                    // Log the error but continue with other models
-                    // In a real implementation, you might want to handle this differently
-                    eprintln!("Error in model {}: {:?}", i, e);
-                }
-            }
-        }
-
-        // Now that we're done with the immutable borrow of self.models, we can modify probabilities
-        for i in &model_failure_indices {
-            self.model_probs[*i] *= 0.5;
-        }
-
-        // Normalize probabilities if there were any failures
-        if !model_failure_indices.is_empty() {
-            self.normalize_probabilities();
-        }
-
-        // Update model probabilities based on likelihood
-        // In a real implementation, you would calculate likelihood based on measurement innovations
-        self.update_model_probabilities()?;
-
-        Ok(predicted_states)
+        
+        // Reset mixed states
+        self.mixed_states = [initial_state.clone(), initial_state.clone(), 
+                          initial_state.clone(), initial_state.clone()];
+        
+        self.initialized = true;
+        
+        Ok(())
     }
-
-    /// Update the mixing probabilities
+    
+    /// Update mixing probabilities based on model probabilities and transition matrix
     fn update_mixing_probabilities(&mut self) -> AhrsResult<()> {
+        if !self.initialized {
+            return Err(AhrsError::InitializationError(
+                "IMM filter not initialized".to_string(),
+            ));
+        }
+        
         // For each target model j
-        for j in 0..3 {
-            // Calculate normalization factor
+        for j in 0..NUM_MODELS {
+            // Calculate normalization factor c_j
             let mut c_j = 0.0;
-            for i in 0..3 {
+            for i in 0..NUM_MODELS {
                 c_j += self.transition_matrix[i][j] * self.model_probs[i];
             }
-
+            
             // Avoid division by zero
-            if c_j.abs() < 1e-10 {
-                return Err(AhrsError::InvalidState);
-            }
-
-            // Calculate mixing probabilities
-            for i in 0..3 {
-                self.mixing_probs[i][j] = self.transition_matrix[i][j] * self.model_probs[i] / c_j;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Update model probabilities based on measurements
-    fn update_model_probabilities(&mut self) -> AhrsResult<()> {
-        // In a real implementation, this would use measurement likelihoods
-        // For now, we just use some heuristic based on model state consistency
-
-        // Calculate likelihood for each model
-        let mut likelihoods = [0.0; 3];
-        for i in 0..3 {
-            // Simple heuristic based on state consistency
-            // A real implementation would use measurement innovations
-            let state = &self.model_states[i];
-
-            // Check if the state is valid
-            if state.position.iter().any(|v| v.is_nan() || v.is_infinite())
-                || state.velocity.iter().any(|v| v.is_nan() || v.is_infinite())
-            {
-                likelihoods[i] = 0.01; // Very low likelihood for invalid states
+            if c_j < 1e-10 {
+                // If normalization is near zero, set uniform mixing probabilities
+                for i in 0..NUM_MODELS {
+                    self.mixing_probs[i][j] = 1.0 / (NUM_MODELS as f32);
+                }
             } else {
-                // Some arbitrary likelihood calculation
-                likelihoods[i] = 1.0;
+                // Calculate mixing probabilities μ_{i|j}
+                for i in 0..NUM_MODELS {
+                    self.mixing_probs[i][j] = 
+                        self.transition_matrix[i][j] * self.model_probs[i] / c_j;
+                }
             }
         }
-
-        // Update model probabilities
-        let mut sum = 0.0;
-        for i in 0..3 {
-            self.model_probs[i] *= likelihoods[i];
-            sum += self.model_probs[i];
-        }
-
-        // Normalize probabilities to avoid numerical issues
-        // Avoid division by zero
-        if sum < 1e-10 {
-            // Reset to equal probabilities if sum is too small
-            self.model_probs = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
-        } else {
-            for i in 0..3 {
-                self.model_probs[i] /= sum;
-            }
-        }
-
+        
         Ok(())
     }
-
-    /// Ensure model probabilities sum to 1.0
-    fn normalize_probabilities(&mut self) {
-        let sum: f32 = self.model_probs.iter().sum();
-
-        if sum > 0.0 {
-            for prob in self.model_probs.iter_mut() {
-                *prob /= sum;
+    
+    /// Compute mixed initial states for each filter
+    fn mix_states(&mut self) -> AhrsResult<()> {
+        if !self.initialized {
+            return Err(AhrsError::InitializationError(
+                "IMM filter not initialized".to_string(),
+            ));
+        }
+        
+        // For each model j, compute the mixed state
+        for j in 0..NUM_MODELS {
+            // Reset the mixed state
+            let mut mixed_state = StateVector::new();
+            
+            // For position, velocity and biases, we can do weighted averaging
+            mixed_state.position = na::Vector3::zeros();
+            mixed_state.velocity = na::Vector3::zeros();
+            mixed_state.accel_bias = na::Vector3::zeros();
+            mixed_state.gyro_bias = na::Vector3::zeros();
+            
+            // Weighted average of position, velocity, and biases
+            for i in 0..NUM_MODELS {
+                let state = self.model_filters[i].get_state();
+                let weight = self.mixing_probs[i][j];
+                
+                mixed_state.position += state.position * weight;
+                mixed_state.velocity += state.velocity * weight;
+                mixed_state.accel_bias += state.accel_bias * weight;
+                mixed_state.gyro_bias += state.gyro_bias * weight;
             }
-        } else {
-            // Reset to equal probabilities if sum is zero or negative
-            self.model_probs = [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0];
+            
+            // For quaternions, we need to use weighted quaternion averaging
+            // We'll use a simplified approach here: weighted sum of quaternion components then normalize
+            let mut q_sum = na::Quaternion::new(0.0, 0.0, 0.0, 0.0);
+            let mut total_weight = 0.0;
+            
+            for i in 0..NUM_MODELS {
+                let state = self.model_filters[i].get_state();
+                let weight = self.mixing_probs[i][j];
+                
+                if weight > 1e-6 {
+                    // Get the quaternion
+                    let q = state.attitude.into_inner();
+                    
+                    // Ensure quaternions are in the same hemisphere (dot product > 0)
+                    let reference_q = if j > 0 {
+                        self.model_filters[0].get_state().attitude.into_inner()
+                    } else {
+                        na::Quaternion::identity()
+                    };
+                    
+                    let dot = q.dot(&reference_q);
+                    let q_aligned = if dot < 0.0 {
+                        -q // Flip to the same hemisphere
+                    } else {
+                        q
+                    };
+                    
+                    // Add weighted quaternion
+                    q_sum.coords += q_aligned.coords * weight;
+                    total_weight += weight;
+                }
+            }
+            
+            // Normalize the quaternion
+            if total_weight > 1e-6 {
+                q_sum.coords /= total_weight;
+                mixed_state.attitude = na::UnitQuaternion::from_quaternion(
+                    na::Quaternion::from_parts(q_sum.scalar(), q_sum.vector())
+                );
+            } else {
+                mixed_state.attitude = na::UnitQuaternion::identity();
+            }
+            
+            // Also mix the covariance matrices
+            self.mix_covariance_matrices(&mut mixed_state, j)?;
+            
+            // Store mixed state
+            self.mixed_states[j] = mixed_state;
+            
+            // Update the filter with the mixed state
+            self.model_filters[j].set_state(&self.mixed_states[j]);
         }
+        
+        Ok(())
     }
-
-    /// Combine the states from all models to get the final state estimate
-    pub fn combine_states(&self) -> StateVector {
-        let mut combined = StateVector::new();
-
-        // Reset to zeros for combining
-        combined.position = na::Vector3::zeros();
-        combined.velocity = na::Vector3::zeros();
-
-        // Combined state is weighted sum of individual model states
-        for i in 0..3 {
-            let weight = self.model_probs[i];
-            combined.position += self.model_states[i].position * weight;
-            combined.velocity += self.model_states[i].velocity * weight;
-
-            // For quaternions, we should use spherical linear interpolation (SLERP)
-            // But for simplicity, we'll use the state from the most likely model
+    
+    /// Mix covariance matrices for a given model
+    fn mix_covariance_matrices(&self, mixed_state: &mut StateVector, model_idx: usize) -> AhrsResult<()> {
+        // Initialize mixed covariance matrices to zero
+        let mut mixed_pos_cov = na::Matrix3::zeros();
+        let mut mixed_vel_cov = na::Matrix3::zeros();
+        let mut mixed_att_cov = na::Matrix3::zeros();
+        
+        // Calculate weighted sum of covariances
+        for i in 0..NUM_MODELS {
+            let state = self.model_filters[i].get_state();
+            let weight = self.mixing_probs[i][model_idx];
+            
+            if weight > 1e-6 {
+                // Add weighted covariance
+                mixed_pos_cov += state.position_covariance * weight;
+                mixed_vel_cov += state.velocity_covariance * weight;
+                mixed_att_cov += state.attitude_covariance * weight;
+            }
         }
-
-        // For non-additive states like quaternions, use the most likely model
-        let most_likely_idx = self.most_likely_model();
-        combined.attitude = self.model_states[most_likely_idx].attitude;
-        combined.accel_bias = self.model_states[most_likely_idx].accel_bias;
-        combined.gyro_bias = self.model_states[most_likely_idx].gyro_bias;
-
-        // Covariance should be combined with proper mathematics
-        // This is a simplification
-        combined.position_covariance = self.model_states[most_likely_idx].position_covariance;
-        combined.velocity_covariance = self.model_states[most_likely_idx].velocity_covariance;
-        combined.attitude_covariance = self.model_states[most_likely_idx].attitude_covariance;
-
-        combined
+        
+        // Assign mixed covariances to the mixed state
+        mixed_state.position_covariance = mixed_pos_cov;
+        mixed_state.velocity_covariance = mixed_vel_cov;
+        mixed_state.attitude_covariance = mixed_att_cov;
+        
+        Ok(())
     }
-
-    /// Get the index of the most likely model
-    pub fn most_likely_model(&self) -> usize {
-        let mut max_prob = self.model_probs[0];
+    
+    /// Find the model with highest mixing probability for a given target model
+    fn most_likely_model_for_mixing(&self, target_model: usize) -> usize {
+        let mut max_prob = 0.0;
         let mut max_idx = 0;
-
-        for i in 1..3 {
-            if self.model_probs[i] > max_prob {
-                max_prob = self.model_probs[i];
+        
+        for i in 0..NUM_MODELS {
+            if self.mixing_probs[i][target_model] > max_prob {
+                max_prob = self.mixing_probs[i][target_model];
                 max_idx = i;
             }
         }
-
+        
         max_idx
     }
-
-    /// Get the name of the most likely model
-    pub fn most_likely_model_name(&self) -> &'static str {
-        self.models[self.most_likely_model()].name()
-    }
-
-    /// Get the probability of a specific model
-    pub fn model_probability(&self, model_idx: usize) -> f32 {
-        if model_idx < 3 {
-            self.model_probs[model_idx]
-        } else {
-            0.0
+    
+    /// Update model probabilities based on measurement likelihoods
+    fn update_model_probabilities(&mut self, innovations: &Vec<na::Vector6<f32>>, 
+                                innovation_covariances: &Vec<na::Matrix6<f32>>) -> AhrsResult<()> {
+        if !self.initialized {
+            return Err(AhrsError::InitializationError(
+                "IMM filter not initialized".to_string(),
+            ));
         }
+        
+        // Calculate likelihood for each model
+        let mut likelihoods = vec![0.0; NUM_MODELS];
+        for j in 0..NUM_MODELS {
+            likelihoods[j] = self.model_filters[j].likelihood(&innovations[j], &innovation_covariances[j]);
+        }
+        
+        // Calculate new model probabilities
+        let mut sum = 0.0;
+        for j in 0..NUM_MODELS {
+            self.model_probs[j] *= likelihoods[j];
+            sum += self.model_probs[j];
+        }
+        
+        // Normalize probabilities
+        if sum < 1e-10 {
+            // If all probabilities are near zero, reset to equal probabilities
+            for j in 0..NUM_MODELS {
+                self.model_probs[j] = 1.0 / (NUM_MODELS as f32);
+            }
+        } else {
+            for j in 0..NUM_MODELS {
+                self.model_probs[j] /= sum;
+                
+                // Apply minimum probability constraint
+                if self.model_probs[j] < self.min_probability {
+                    self.model_probs[j] = self.min_probability;
+                }
+            }
+            
+            // Re-normalize after applying minimum probability constraint
+            sum = self.model_probs.iter().sum();
+            for j in 0..NUM_MODELS {
+                self.model_probs[j] /= sum;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Run prediction step for all models
+    pub fn predict(&mut self, imu_data: &ImuData, dt: f32) -> AhrsResult<StateVector> {
+        if !self.initialized {
+            return Err(AhrsError::InitializationError(
+                "IMM filter not initialized".to_string(),
+            ));
+        }
+        
+        // Step 1: Calculate mixing probabilities
+        self.update_mixing_probabilities()?;
+        
+        // Step 2: Mix states
+        self.mix_states()?;
+        
+        // Step 3: Run prediction for each model
+        for filter in &mut self.model_filters {
+            filter.predict(imu_data, dt)?;
+        }
+        
+        // Step 4: Combine state estimates
+        Ok(self.combine_states())
+    }
+    
+    /// Run update step for all models with GPS data
+    pub fn update_gps(&mut self, gps_data: &GpsData) -> AhrsResult<StateVector> {
+        if !self.initialized {
+            return Err(AhrsError::InitializationError(
+                "IMM filter not initialized".to_string(),
+            ));
+        }
+        
+        // Collect innovations from all models
+        let mut innovations = Vec::with_capacity(NUM_MODELS);
+        let mut innovation_covariances = Vec::with_capacity(NUM_MODELS);
+        
+        for filter in &self.model_filters {
+            let (innovation, innovation_cov) = filter.gps_innovation(gps_data);
+            innovations.push(innovation);
+            innovation_covariances.push(innovation_cov);
+        }
+        
+        // Update each model
+        for filter in &mut self.model_filters {
+            filter.update_gps(gps_data)?;
+        }
+        
+        // Update model probabilities
+        self.update_model_probabilities(&innovations, &innovation_covariances)?;
+        
+        // Combine state estimates
+        Ok(self.combine_states())
+    }
+    
+    /// Run update step for all models with barometer data
+    pub fn update_baro(&mut self, baro_data: &BaroData) -> AhrsResult<StateVector> {
+        if !self.initialized {
+            return Err(AhrsError::InitializationError(
+                "IMM filter not initialized".to_string(),
+            ));
+        }
+        
+        // Update each model
+        for filter in &mut self.model_filters {
+            filter.update_baro(baro_data)?;
+        }
+        
+        // Probabilities can't be updated without innovations
+        // For barometer, we don't adjust model probabilities
+        
+        // Combine state estimates
+        Ok(self.combine_states())
+    }
+    
+    /// Combine state estimates from all models
+    pub fn combine_states(&self) -> StateVector {
+        // Initialize combined state
+        let mut combined_state = StateVector::new();
+        
+        // For position, velocity and biases, we can do weighted averaging
+        combined_state.position = na::Vector3::zeros();
+        combined_state.velocity = na::Vector3::zeros();
+        combined_state.accel_bias = na::Vector3::zeros();
+        combined_state.gyro_bias = na::Vector3::zeros();
+        
+        // Combined covariance matrices (initialized to zero)
+        let mut combined_pos_cov = na::Matrix3::zeros();
+        let mut combined_vel_cov = na::Matrix3::zeros();
+        let mut combined_att_cov = na::Matrix3::zeros();
+        
+        // First calculate weighted means
+        for j in 0..NUM_MODELS {
+            let state = self.model_filters[j].get_state();
+            let weight = self.model_probs[j];
+            
+            // Skip if weight is too small
+            if weight < 1e-6 {
+                continue;
+            }
+            
+            // Add weighted components
+            combined_state.position += state.position * weight;
+            combined_state.velocity += state.velocity * weight;
+            combined_state.accel_bias += state.accel_bias * weight;
+            combined_state.gyro_bias += state.gyro_bias * weight;
+        }
+        
+        // Special handling for attitude (quaternion)
+        // We use the SLERP approach for combining multiple quaternions
+        
+        // First identify the most likely model to use as reference
+        let most_likely_idx = self.most_likely_model();
+        let reference_q = self.model_filters[most_likely_idx].get_state().attitude;
+        
+        // Initialize weighted quaternion
+        let mut q_sum = na::Quaternion::new(0.0, 0.0, 0.0, 0.0);
+        let mut total_weight = 0.0;
+        
+        // Combine quaternions
+        for j in 0..NUM_MODELS {
+            let state = self.model_filters[j].get_state();
+            let weight = self.model_probs[j];
+            
+            if weight > 1e-6 {
+                // Get the quaternion
+                let q = state.attitude.into_inner();
+                
+                // Ensure quaternions are in the same hemisphere
+                let dot = q.dot(&reference_q.into_inner());
+                let q_aligned = if dot < 0.0 {
+                    -q // Flip to the same hemisphere
+                } else {
+                    q
+                };
+                
+                // Add weighted quaternion
+                q_sum.coords += q_aligned.coords * weight;
+                total_weight += weight;
+            }
+        }
+        
+        // Normalize the quaternion
+        if total_weight > 1e-6 {
+            q_sum.coords /= total_weight;
+            combined_state.attitude = na::UnitQuaternion::from_quaternion(
+                na::Quaternion::from_parts(q_sum.scalar(), q_sum.vector())
+            );
+        } else {
+            combined_state.attitude = reference_q;
+        }
+        
+        // Calculate combined covariance with spread of means
+        for j in 0..NUM_MODELS {
+            let state = self.model_filters[j].get_state();
+            let weight = self.model_probs[j];
+            
+            if weight < 1e-6 {
+                continue;
+            }
+            
+            // Within-model covariance contribution
+            combined_pos_cov += state.position_covariance * weight;
+            combined_vel_cov += state.velocity_covariance * weight;
+            combined_att_cov += state.attitude_covariance * weight;
+            
+            // Between-model spread contribution (for position)
+            let pos_diff = state.position - combined_state.position;
+            let pos_spread = pos_diff * pos_diff.transpose() * weight;
+            combined_pos_cov += pos_spread;
+            
+            // Between-model spread contribution (for velocity)
+            let vel_diff = state.velocity - combined_state.velocity;
+            let vel_spread = vel_diff * vel_diff.transpose() * weight;
+            combined_vel_cov += vel_spread;
+            
+            // For attitude, we need a different approach - using Euler angles for simplicity
+            let state_euler = state.attitude.euler_angles();
+            let combined_euler = combined_state.attitude.euler_angles();
+            
+            let att_diff = na::Vector3::new(
+                state_euler.0 - combined_euler.0,
+                state_euler.1 - combined_euler.1,
+                state_euler.2 - combined_euler.2,
+            );
+            
+            let att_spread = att_diff * att_diff.transpose() * weight;
+            combined_att_cov += att_spread;
+        }
+        
+        // Assign combined covariances
+        combined_state.position_covariance = combined_pos_cov;
+        combined_state.velocity_covariance = combined_vel_cov;
+        combined_state.attitude_covariance = combined_att_cov;
+        
+        combined_state
+    }
+    
+    /// Get the index of the most likely model
+    pub fn most_likely_model(&self) -> usize {
+        let mut max_prob = 0.0;
+        let mut max_idx = 0;
+        
+        for (i, &prob) in self.model_probs.iter().enumerate() {
+            if prob > max_prob {
+                max_prob = prob;
+                max_idx = i;
+            }
+        }
+        
+        max_idx
+    }
+    
+    /// Get the name of the most likely model
+    pub fn most_likely_model_name(&self) -> &str {
+        let idx = self.most_likely_model();
+        self.model_filters[idx].model_name()
+    }
+    
+    /// Get current model probabilities
+    pub fn get_model_probabilities(&self) -> &[f32] {
+        &self.model_probs
+    }
+    
+    /// Set custom transition matrix
+    pub fn set_transition_matrix(&mut self, matrix: Vec<Vec<f32>>) -> AhrsResult<()> {
+        // Validate matrix dimensions
+        if matrix.len() != NUM_MODELS {
+            return Err(AhrsError::InitializationError(
+                format!("Invalid transition matrix size: expected {} rows", NUM_MODELS)
+            ));
+        }
+        
+        for row in &matrix {
+            if row.len() != NUM_MODELS {
+                return Err(AhrsError::InitializationError(
+                    format!("Invalid transition matrix size: expected {} columns", NUM_MODELS)
+                ));
+            }
+        }
+        
+        // Validate each row sums to 1.0
+        for row in &matrix {
+            let sum: f32 = row.iter().sum();
+            if (sum - 1.0).abs() > 1e-5 {
+                return Err(AhrsError::InitializationError(
+                    format!("Transition matrix row does not sum to 1.0: {}", sum)
+                ));
+            }
+        }
+        
+        // Copy values from the Vec<Vec<f32>> to our fixed-size array
+        for i in 0..NUM_MODELS {
+            for j in 0..NUM_MODELS {
+                self.transition_matrix[i][j] = matrix[i][j];
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Set minimum allowed model probability
+    pub fn set_min_probability(&mut self, min_prob: f32) -> AhrsResult<()> {
+        if min_prob < 0.0 || min_prob > 0.5 {
+            return Err(AhrsError::InitializationError(
+                format!("Invalid minimum probability: {}, should be between 0 and 0.5", min_prob)
+            ));
+        }
+        
+        self.min_probability = min_prob;
+        
+        Ok(())
     }
 }
