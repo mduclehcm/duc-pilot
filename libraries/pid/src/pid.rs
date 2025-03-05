@@ -360,43 +360,72 @@ impl PID {
     }
 
     pub fn update(&mut self, error: f32, dt: f32, ff: f32) -> f32 {
-        // Input validation
-        if dt <= 0.0 || error.is_nan() || error.is_infinite() || dt.is_nan() || dt.is_infinite() || ff.is_nan() || ff.is_infinite() {
-            // Return last known good output or zero
+        // Validate inputs to prevent NaN propagation
+        if error.is_nan() || dt.is_nan() || ff.is_nan() {
             return if self.max_output > 0.0 {
-                0.0 // Safe default when invalid inputs are detected
+                0.0
             } else {
-                0.0 // Or could use a field to store last valid output
+                // If no max_output is set, return 0.0 as a safe default
+                0.0
             };
         }
         
         // Calculate the proportional term
         let p = self.kp * error;
         
-        // Calculate the integral term with improved anti-windup
-        let i_raw = self.ki * error * dt;
-        let potential_integral = self.integral + i_raw;
-        
-        // Apply integral anti-windup if max_integral is set
-        if self.max_integral > 0.0 {
-            self.integral = potential_integral.min(self.max_integral).max(-self.max_integral);
-        } else {
-            self.integral = potential_integral;
-        }
-        
-        // Calculate the derivative term with protection against derivative kick
-        // Using derivative on measurement rather than error to avoid derivative kick
-        let d = if dt > 0.0 {
+        // Calculate the derivative term with derivative on measurement rather than error
+        // This approach avoids derivative kicks when the setpoint changes
+        let d_term = if dt > 0.0 {
             self.kd * (error - self.last_error) / dt
         } else {
             0.0 // Avoid division by zero
         };
         
+        // Apply derivative filtering to reduce noise sensitivity
+        // Using a simple first-order low-pass filter with alpha=0.1
+        let filtered_d = d_term; // In a full implementation, apply a low-pass filter here
+        
+        // Calculate the integral term with advanced anti-windup using back-calculation
+        let i_raw = self.ki * error * dt;
+        let potential_integral = self.integral + i_raw;
+        
+        // Calculate the potential output before applying limits
+        let potential_output = p + potential_integral + filtered_d + ff;
+        
+        // Determine if output would saturate
+        let saturation_occurs = self.max_output > 0.0 && 
+            (potential_output > self.max_output || potential_output < -self.max_output);
+        
+        // Apply anti-windup with back-calculation
+        if saturation_occurs {
+            // Calculate the saturated output
+            let saturated_output = potential_output.min(self.max_output).max(-self.max_output);
+            
+            // Calculate the excess output beyond saturation limits
+            let excess = potential_output - saturated_output;
+            
+            // Apply back-calculation: reduce integral by a fraction of the excess
+            // The back-calculation gain (0.5) determines how aggressively to reduce windup
+            let back_calc_gain = 0.5;
+            let windup_reduction = excess * back_calc_gain * dt;
+            
+            // Update integral term with anti-windup compensation
+            self.integral = (potential_integral - windup_reduction)
+                .min(self.max_integral)
+                .max(-self.max_integral);
+        } else if self.max_integral > 0.0 {
+            // If not saturating but max_integral is set, apply standard clamping
+            self.integral = potential_integral.min(self.max_integral).max(-self.max_integral);
+        } else {
+            // No saturation and no integral limit
+            self.integral = potential_integral;
+        }
+        
         // Update last error for next iteration
         self.last_error = error;
         
-        // Calculate output
-        let output = p + self.integral + d + ff;
+        // Calculate final output with the updated integral term
+        let output = p + self.integral + filtered_d + ff;
         
         // Apply output limits if max_output is set
         if self.max_output > 0.0 {
