@@ -224,7 +224,7 @@ impl FlightAxisWorker {
                         parsed_aircraft_state = self.parse_aircraft_state(&mut parser, state)?;
                     }
                     QName(b"m-notifications") => match parser.read_event() {
-                        Ok(Event::Start(e)) => {
+                        Ok(Event::Start(_e)) => {
                             let value = parser.read_text(QName(b"m-resetButtonHasBeenPressed"))?;
                             if value == "true" {
                                 println!("Reset button has been pressed: {}", value);

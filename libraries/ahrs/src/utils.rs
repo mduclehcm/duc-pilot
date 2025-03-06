@@ -1,5 +1,5 @@
 use nalgebra as na;
-use std::f32::consts::PI;
+use core::f32::consts::PI;
 
 /// Convert degrees to radians
 pub fn deg_to_rad(deg: f32) -> f32 {

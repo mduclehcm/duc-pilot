@@ -1,7 +1,5 @@
-use embassy_stm32::i2c::{I2c, Instance};
 use embassy_time::{Timer, Duration};
 use crate::baro::{BarometerChip, I2cDevice};
-use core::marker::PhantomData;
 
 // SPL06 I2C addresses
 pub const SPL06_I2C_ADDR_PRIMARY: u8 = 0x76;

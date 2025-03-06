@@ -2,7 +2,7 @@ use crate::ekf::Ekf;
 use crate::sensors::{BaroData, GpsData, ImuData};
 use crate::{AhrsConfig, AhrsResult, StateVector};
 use nalgebra as na;
-use std::f32::consts::PI;
+use core::f32::consts::PI;
 use crate::imm::NUM_MODELS;
 
 /// A trait for filters that implement different motion models
@@ -50,6 +50,7 @@ struct BaseModelFilter {
     vel_noise: f32,
     
     /// Process noise settings for attitude
+    #[allow(dead_code)]
     att_noise: f32,
     
     /// Current state estimate
@@ -820,8 +821,8 @@ pub enum ModelFilterEnum {
 }
 
 // Manually implement Debug for ModelFilterEnum
-impl std::fmt::Debug for ModelFilterEnum {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for ModelFilterEnum {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             ModelFilterEnum::ConstantVelocity(_) => write!(f, "ModelFilterEnum::ConstantVelocity"),
             ModelFilterEnum::ConstantAcceleration(_) => write!(f, "ModelFilterEnum::ConstantAcceleration"),

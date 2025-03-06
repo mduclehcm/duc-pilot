@@ -1,64 +1,44 @@
+#![no_std]
+
+// Removed alloc dependency which is no longer needed
+// extern crate alloc;
+// use alloc::string::String;
+// use alloc::format;
+// use alloc::string::ToString;
+
 // ### AHRS Module with EKF and IMM-Based Estimation
-
+//
 // The **Attitude and Heading Reference System (AHRS) module** for UAVs is a high-precision state estimation unit that integrates data from **Inertial Measurement Units (IMU), GPS, and a barometric altimeter** to determine the drone's **true position, attitude, and velocity** in real-time. This module is designed to provide robust state estimation under various flight conditions, including GPS-denied environments, by leveraging advanced sensor fusion techniques.
-
+//
 // #### **Key Features:**
 // - **Multi-Sensor Data Fusion:**
 //   - **IMU** (Accelerometer, Gyroscope, Magnetometer) for high-frequency attitude and angular velocity estimation.
 //   - **GPS** for absolute position, velocity, and aiding navigation.
 //   - **Barometric Altimeter** for altitude corrections and redundancy.
-
+//
 // - **Extended Kalman Filter (EKF):**
 //   - Third-order EKF implementation for improved nonlinear state estimation.
 //   - Corrects IMU drift using GPS and barometer data.
 //   - Incorporates vehicle dynamics to enhance accuracy.
-
+//
 // - **Interactive Multiple Model (IMM) Pattern:**
 //   - Uses multiple motion models (e.g., constant velocity, constant acceleration) to adapt to different flight conditions.
 //   - Dynamically switches between models based on sensor data confidence.
 //   - Improves robustness against sensor noise and anomalies.
-
+//
 // - **High-Precision State Estimation:**
 //   - **Attitude (Roll, Pitch, Yaw)**
 //   - **Velocity (North, East, Down)**
 //   - **Position (Latitude, Longitude, Altitude)**
 //   - **Acceleration and Angular Rates**
-
+//
 // - **Resilient in GNSS-Denied Environments:**
 //   - Integrates IMU and baro data for dead-reckoning navigation when GPS is unavailable.
 //   - Uses model-based corrections to minimize drift.
 
-// - **Low-Latency Output for Control Systems:**
-//   - Provides real-time updates to the UAV's flight controller for smooth, stable flight.
-//   - Supports MAVLink or custom communication protocols for seamless integration.
-
-// This AHRS module is ideal for UAV applications requiring **high accuracy, fault tolerance, and adaptability**, making it suitable for autonomous drones, VTOL aircraft, and UAV swarms operating in complex environments.
-
-//! # AHRS - Attitude and Heading Reference System
-//!
-//! The AHRS module provides a robust state estimation solution for UAVs, integrating
-//! data from multiple sensors including IMU, GPS, and barometric altimeter.
-//!
-//! ## Features
-//!
-//! - Advanced sensor fusion with EKF (Extended Kalman Filter)
-//! - Interactive Multiple Model (IMM) pattern for adaptive estimation
-//! - High-precision state estimation for attitude, velocity, and position
-//! - Operation in GPS-denied environments
-//! - Low-latency output for real-time control systems
-//!
-//! ## Platform Support
-//!
-//! This crate supports multiple platforms with different feature flags:
-//!
-//! - **desktop**: For desktop applications and SITL (Software In The Loop) simulation
-//! - **stm32**: For STM32 microcontrollers with Embassy framework
-
 use nalgebra as na;
-use crate::imm::NUM_MODELS;
-pub use crate::error::{AhrsError, AhrsResult, FilterType, SensorType};
-use crate::error::helpers;
 
+// Export internal modules
 pub mod ekf;
 pub mod imm;
 pub mod models;
@@ -66,7 +46,11 @@ pub mod sensors;
 pub mod utils;
 pub mod error;
 
-/// Default window size for rate calculation (number of samples to keep)
+// Re-export essential elements
+use error::{AhrsResult, SensorType, helpers};
+use imm::NUM_MODELS;
+
+// Default configuration constants
 pub const DEFAULT_RATE_WINDOW_SIZE: usize = 10;
 
 /// Default update rate for the AHRS in Hz
@@ -376,8 +360,12 @@ impl Ahrs {
         };
 
         // Validate time step
-        if dt <= 0.0 || dt.is_nan() || dt.is_infinite() {
-            return Err(helpers::timing_error(format!("Invalid time step: {}", dt), Some(dt)));
+        if dt < 0.0 {
+            return Err(helpers::timing_error(error::ErrorCode::NegativeTimeStep, Some(dt)));
+        } else if dt == 0.0 {
+            return Err(helpers::timing_error(error::ErrorCode::ZeroTimeStep, Some(dt)));
+        } else if dt.is_nan() || dt.is_infinite() {
+            return Err(helpers::timing_error(error::ErrorCode::InvalidTimestamp, Some(dt)));
         }
 
         // Run IMM predict step - this handles prediction for all internal models
@@ -418,9 +406,9 @@ impl Ahrs {
                 .any(|v| v.is_nan() || v.is_infinite())
         {
             return Err(helpers::sensor_error(
-                "GPS data contains NaN or infinite values".to_string(),
+                error::ErrorCode::InvalidSensorData,
                 SensorType::GPS,
-                None::<String>,
+                None,
             ));
         }
 
@@ -458,9 +446,9 @@ impl Ahrs {
         // Validate input data
         if baro_data.altitude.is_nan() || baro_data.altitude.is_infinite() {
             return Err(helpers::sensor_error(
-                "Barometer data contains NaN or infinite values".to_string(),
+                error::ErrorCode::InvalidSensorData,
                 SensorType::Barometer,
-                None::<String>,
+                None,
             ));
         }
 
@@ -565,10 +553,19 @@ impl Ahrs {
     /// IMU updates have been received.
     pub fn time_since_last_imu_update(&self) -> Option<f32> {
         match self.last_imu_update {
-            Some(last_time) => {
-                // Get current time using the sensors time utility
-                let current_time = sensors::time_convert::now();
-                Some(current_time - last_time)
+            Some(_last_update) => {
+                #[cfg(feature = "embassy")]
+                {
+                    let current_time = sensors::time_convert::now();
+                    Some(current_time - _last_update)
+                }
+                
+                #[cfg(not(feature = "embassy"))]
+                {
+                    // For non-embassy builds, we don't have a real-time clock
+                    // so we return 0.0 as a placeholder
+                    Some(0.0)
+                }
             }
             None => None,
         }
@@ -581,10 +578,19 @@ impl Ahrs {
     /// GPS updates have been received.
     pub fn time_since_last_gps_update(&self) -> Option<f32> {
         match self.last_gps_update {
-            Some(last_time) => {
-                // Get current time using the sensors time utility
-                let current_time = sensors::time_convert::now();
-                Some(current_time - last_time)
+            Some(_last_update) => {
+                #[cfg(feature = "embassy")]
+                {
+                    let current_time = sensors::time_convert::now();
+                    Some(current_time - _last_update)
+                }
+                
+                #[cfg(not(feature = "embassy"))]
+                {
+                    // For non-embassy builds, we don't have a real-time clock
+                    // so we return 0.0 as a placeholder
+                    Some(0.0)
+                }
             }
             None => None,
         }
@@ -597,10 +603,19 @@ impl Ahrs {
     /// barometer updates have been received.
     pub fn time_since_last_baro_update(&self) -> Option<f32> {
         match self.last_baro_update {
-            Some(last_time) => {
-                // Get current time using the sensors time utility
-                let current_time = sensors::time_convert::now();
-                Some(current_time - last_time)
+            Some(_last_update) => {
+                #[cfg(feature = "embassy")]
+                {
+                    let current_time = sensors::time_convert::now();
+                    Some(current_time - _last_update)
+                }
+                
+                #[cfg(not(feature = "embassy"))]
+                {
+                    // For non-embassy builds, we don't have a real-time clock
+                    // so we return 0.0 as a placeholder
+                    Some(0.0)
+                }
             }
             None => None,
         }

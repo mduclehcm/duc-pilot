@@ -6,4 +6,3 @@ pub mod baro;
 
 pub use ublox::*;
 pub use baro::*;
-pub use imu::*;

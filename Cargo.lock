@@ -1063,8 +1063,10 @@ dependencies = [
  "embassy-futures",
  "embassy-stm32",
  "embassy-time",
+ "embedded-hal-async",
  "hal",
  "heapless",
+ "num-traits",
 ]
 
 [[package]]

@@ -1,7 +1,5 @@
-use embassy_stm32::i2c::{I2c, Instance};
 use embassy_time::{Timer, Duration};
 use crate::baro::{BarometerChip, I2cDevice};
-use core::marker::PhantomData;
 
 // DPS310 I2C addresses
 pub const DPS310_I2C_ADDR_PRIMARY: u8 = 0x77;
@@ -275,7 +273,7 @@ impl<I: I2cDevice> Dps310<I> {
         self.read_regs(DPS310_REG_COEF, &mut coef_buf).await?;
         
         // Read the temperature coefficient source
-        let coef_src = self.read_reg(DPS310_REG_COEF_SRC).await?;
+        let _coef_src = self.read_reg(DPS310_REG_COEF_SRC).await?;
         
         // Calculate c0, c1 (12-bit values)
         let mut c0 = ((coef_buf[0] as u16) << 4) | ((coef_buf[1] as u16) >> 4);
@@ -332,10 +330,9 @@ impl<I: I2cDevice> Dps310<I> {
             self.write_reg(DPS310_REG_MEAS_CFG, DPS310_MODE_TEMPERATURE_ONCE).await?;
             
             // Wait for measurement to complete
-            let mut status = 0;
             let mut attempts = 0;
             while attempts < 20 {
-                status = self.read_reg(DPS310_REG_MEAS_CFG).await?;
+                let status = self.read_reg(DPS310_REG_MEAS_CFG).await?;
                 if status & 0x20 != 0 {
                     break; // Temperature measurement ready
                 }
@@ -377,10 +374,9 @@ impl<I: I2cDevice> Dps310<I> {
             self.write_reg(DPS310_REG_MEAS_CFG, DPS310_MODE_PRESSURE_ONCE).await?;
             
             // Wait for measurement to complete
-            let mut status = 0;
             let mut attempts = 0;
             while attempts < 20 {
-                status = self.read_reg(DPS310_REG_MEAS_CFG).await?;
+                let status = self.read_reg(DPS310_REG_MEAS_CFG).await?;
                 if status & 0x10 != 0 {
                     break; // Pressure measurement ready
                 }

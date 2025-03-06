@@ -1,3 +1,7 @@
+extern crate alloc;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 /// GPS sensor interface
 
 /// GPS position data
@@ -87,10 +91,75 @@ impl Default for GpsTime {
     }
 }
 
-/// GPS interface
+/// Error type for GPS operations
+/// These errors are used to provide detailed information about what went wrong
+/// during GPS operations, allowing applications to handle different error cases
+/// appropriately.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GpsError {
+    /// Device initialization failed
+    /// This can happen due to communication issues or incompatible hardware
+    InitFailed,
+    /// Communication error with the GPS device
+    /// This can occur due to serial connection issues, I/O errors, or protocol violations
+    CommError,
+    /// Operation timed out
+    /// This happens when the GPS device does not respond within the expected timeframe
+    Timeout,
+    /// Error applying configuration to the GPS device
+    /// This can happen if the device rejects a configuration or the command format is invalid
+    ConfigError,
+}
+
+/// GPS device configuration
+/// This structure contains information about the GPS device's capabilities and
+/// current configuration settings. It is returned by the initialization process
+/// to inform the application about the device's capabilities.
+#[derive(Debug, Clone)]
+pub struct GpsDeviceConfig {
+    /// Device model name or identifier
+    pub device_name: String,
+    /// Firmware version of the GPS module
+    pub firmware_version: String,
+    /// Update rate in milliseconds - how frequently the device produces new position updates
+    pub update_rate_ms: u32,
+    /// Whether the device supports Satellite Based Augmentation System for improved accuracy
+    pub sbas_supported: bool,
+    /// List of GNSS constellations currently enabled on the device
+    pub enabled_constellations: Vec<GnssConstellation>,
+}
+
+/// GNSS constellation types
+/// Global Navigation Satellite Systems (GNSS) consist of different satellite constellations
+/// operated by various countries. Modern GPS receivers often support multiple constellations
+/// to improve accuracy and reliability.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GnssConstellation {
+    /// GPS (United States) - The original and most widely used satellite navigation system
+    Gps,
+    /// GLONASS (Russia) - Russian alternative to GPS, second fully operational GNSS
+    Glonass,
+    /// Galileo (Europe) - European Union's global navigation system
+    Galileo,
+    /// BeiDou (China) - Chinese navigation system, also known as COMPASS
+    BeiDou,
+    /// QZSS (Japan) - Regional navigation system covering Japan and Asia-Oceania regions
+    Qzss,
+    /// SBAS (Satellite Based Augmentation System) - Includes WAAS, EGNOS, MSAS, GAGAN
+    /// These systems improve accuracy through correction data transmitted by satellites
+    Sbas,
+}
+
+/// Core GPS interface with essential functionality
 pub trait GpsSensor {
     /// Initialize the GPS sensor
-    fn init(&mut self) -> bool;
+    /// 
+    /// This asynchronous method configures the GPS module with default settings
+    /// and prepares it for operation. It should be called before any other methods.
+    ///
+    /// Returns Ok with the detected GPS configuration on success, or Err on failure.
+    /// The configuration contains information about the device capabilities and settings.
+    async fn init(&mut self) -> Result<GpsDeviceConfig, GpsError>;
     
     /// Get the current GPS position
     fn get_position(&self) -> GpsPosition;
@@ -98,48 +167,110 @@ pub trait GpsSensor {
     /// Check if GPS has a valid fix
     fn has_fix(&self) -> bool;
     
-    /// Calibrate the GPS sensor
-    fn calibrate(&mut self) -> bool;
-    
-    /// Reset the GPS sensor to default state
-    fn reset(&mut self) -> bool;
-    
-    /// Set the update rate in milliseconds
-    fn set_update_rate(&mut self, rate_ms: u32) -> bool;
-    
-    /// Enable or disable power saving mode
-    fn set_power_mode(&mut self, low_power: bool) -> bool;
-    
-    /// Get detailed information about visible satellites
-    /// Returns an array of satellite information with the count of valid items
-    fn get_satellite_info(&self, buffer: &mut [SatelliteInfo; 32]) -> u8;
-    
-    /// Get the time to first fix in seconds
-    fn get_time_to_first_fix(&self) -> Option<f32>;
-    
-    /// Configure the minimum satellite count required for a valid fix
-    fn set_min_satellites(&mut self, count: u8) -> bool;
-    
     /// Get the current velocity information
     fn get_velocity(&self) -> GpsVelocity;
     
     /// Get the current GPS time
     fn get_time(&self) -> GpsTime;
     
+    /// Get the GPS status information
+    fn get_status(&self) -> GpsStatus;
+    
+    /// Get detailed information about visible satellites
+    /// Returns an array of satellite information with the count of valid items
+    fn get_satellite_info(&self, buffer: &mut [SatelliteInfo; 32]) -> u8;
+    
     /// Get the horizontal dilution of precision (HDOP)
     /// Lower values indicate better positional accuracy
     fn get_hdop(&self) -> f32;
+    
+    /// Wait until new data is available from the GPS device
+    /// 
+    /// This asynchronous method blocks until new GPS data is received or a timeout occurs.
+    /// It is useful for applications that need to process each new GPS reading as it arrives,
+    /// without polling or busy-waiting.
+    /// 
+    /// Returns Ok(true) if new data was received, or Err(GpsError::Timeout) if the wait timed out,
+    /// or another error if a communication problem occurred.
+    async fn wait_data(&mut self) -> Result<bool, GpsError>;
+}
+
+/// Extended GPS functionality for advanced configuration
+/// 
+/// This trait provides methods for configuring advanced GPS features.
+/// Implementation is optional and driver-specific, as not all GPS modules
+/// support these configuration options.
+///
+/// Applications should check if a GPS driver implements this trait before
+/// attempting to use these methods. Drivers can implement this trait to
+/// expose hardware-specific configuration options.
+pub trait GpsAdvancedConfig {
+    /// Reset the GPS sensor to default state
+    /// 
+    /// This performs a factory reset of the GPS module, clearing all custom
+    /// configurations and returning it to its default state. This is useful
+    /// when the module is in an unknown or problematic state.
+    ///
+    /// Returns true if the reset was successful, false otherwise.
+    fn reset(&mut self) -> bool;
+    
+    /// Set the update rate in milliseconds
+    /// 
+    /// Configure how frequently the GPS module produces new position updates.
+    /// Lower values provide more frequent updates but consume more power.
+    /// Typical values range from 100ms (10Hz) to 1000ms (1Hz).
+    ///
+    /// Returns true if the update rate was successfully set, false otherwise.
+    fn set_update_rate(&mut self, rate_ms: u32) -> bool;
+    
+    /// Configure the minimum satellite count required for a valid fix
+    /// 
+    /// Sets the minimum number of satellites required for the GPS to report
+    /// a valid position fix. Higher values generally increase accuracy but
+    /// may reduce availability in challenging environments.
+    ///
+    /// Returns true if the setting was applied, false otherwise.
+    fn set_min_satellites(&mut self, count: u8) -> bool;
+    
+    /// Configure which GNSS constellations to use
+    /// 
+    /// Enables or disables specific satellite constellations like GPS, GLONASS,
+    /// Galileo, BeiDou, etc. Using multiple constellations typically improves
+    /// accuracy and availability but may increase power consumption.
+    ///
+    /// Returns true if the configuration was applied, false otherwise.
+    fn configure_gnss(&mut self, config: GnssConfig) -> bool;
+}
+
+/// Extended GPS functionality for performance monitoring
+/// Implementations are optional and driver-specific
+pub trait GpsPerformanceMonitoring {
+    /// Get the time to first fix in seconds
+    fn get_time_to_first_fix(&self) -> Option<f32>;
     
     /// Get the vertical dilution of precision (VDOP)
     /// Lower values indicate better vertical accuracy
     fn get_vdop(&self) -> f32;
     
+    /// Get the estimated heading accuracy in degrees
+    fn get_heading_accuracy(&self) -> f32;
+    
+    /// Calibrate the GPS sensor
+    fn calibrate(&mut self) -> bool;
+}
+
+/// Extended GPS functionality for power management
+/// Implementations are optional and driver-specific
+pub trait GpsPowerManagement {
+    /// Enable or disable power saving mode
+    fn set_power_mode(&mut self, low_power: bool) -> bool;
+}
+
+/// Extended GPS functionality for special features
+/// Implementations are optional and driver-specific
+pub trait GpsSpecialFeatures {
     /// Enable or disable Satellite Based Augmentation System (SBAS)
     fn set_sbas_enabled(&mut self, enabled: bool) -> bool;
-    
-    /// Configure which GNSS constellations to use
-    /// (GPS, GLONASS, Galileo, BeiDou, etc.)
-    fn configure_gnss(&mut self, config: GnssConfig) -> bool;
     
     /// Send a raw NMEA command to the GPS module
     fn send_nmea_command(&mut self, command: &str) -> bool;
@@ -147,14 +278,8 @@ pub trait GpsSensor {
     /// Parse a raw NMEA sentence
     fn parse_nmea(&mut self, nmea: &str) -> bool;
     
-    /// Get the estimated heading accuracy in degrees
-    fn get_heading_accuracy(&self) -> f32;
-    
     /// Enable or disable dead reckoning capabilities if available
     fn set_dead_reckoning(&mut self, enabled: bool) -> bool;
-    
-    /// Get the GPS status information
-    fn get_status(&self) -> GpsStatus;
 }
 
 /// Information about a satellite

@@ -1,30 +1,21 @@
 #[cfg(feature = "embassy")]
 use embassy_time::{Duration, Instant};
 use nalgebra as na;
+extern crate alloc;
 
 /// Timestamp type - using f32 in seconds for all timestamps
 pub type TimeStamp = f32;
 
-/// Standard library time conversion utilities
+/// Time conversion utilities - these are now feature gated
 #[cfg(feature = "desktop")]
 pub mod time_convert {
+    // We'll use a simplified version for now
     use super::TimeStamp;
-    use std::sync::OnceLock;
-    use std::time::Instant;
-
-    /// Base time for std::time::Instant conversions
-    static BASE_TIME: OnceLock<Instant> = OnceLock::new();
-
-    /// Convert from std::time::Instant to TimeStamp (f32 seconds)
-    pub fn instant_to_timestamp(instant: &Instant) -> TimeStamp {
-        // Initialize once, thread-safely
-        let base = BASE_TIME.get_or_init(|| *instant);
-        instant.duration_since(*base).as_secs_f32()
-    }
-
-    /// Get current time as timestamp
+    
+    // For desktop builds without embassy, we'll just use a simple function
+    // that returns 0.0 (this will be replaced with proper time handling later)
     pub fn now() -> TimeStamp {
-        instant_to_timestamp(&Instant::now())
+        0.0
     }
 }
 

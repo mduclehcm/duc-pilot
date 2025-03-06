@@ -1,9 +1,13 @@
+// extern crate alloc;
+// use alloc::format;
+// use alloc::string::String;
+// use alloc::string::ToString;
+
+use crate::error::{AhrsResult, ErrorCode, SensorType, FilterType, helpers};
 use crate::sensors::{BaroData, GpsData, ImuData};
+use crate::{AhrsConfig, StateVector};
 use crate::utils;
-use crate::{AhrsConfig, AhrsResult, StateVector};
 use nalgebra as na;
-use crate::error::{SensorType, FilterType};
-use crate::error::helpers;
 
 /// Extended Kalman Filter (EKF) implementation
 pub struct Ekf {
@@ -117,9 +121,19 @@ impl Ekf {
         dt: f32,
     ) -> AhrsResult<StateVector> {
         // Input validation
-        if dt <= 0.0 || dt.is_nan() {
+        if dt < 0.0 {
             return Err(helpers::timing_error(
-                format!("Invalid time step in EKF prediction: {}", dt),
+                ErrorCode::NegativeTimeStep,
+                Some(dt)
+            ));
+        } else if dt == 0.0 {
+            return Err(helpers::timing_error(
+                ErrorCode::ZeroTimeStep,
+                Some(dt)
+            ));
+        } else if dt.is_nan() || dt.is_infinite() {
+            return Err(helpers::timing_error(
+                ErrorCode::InvalidTimestamp,
                 Some(dt)
             ));
         }
@@ -128,9 +142,9 @@ impl Ekf {
             || imu_data.gyro.iter().any(|v| v.is_nan() || v.is_infinite())
         {
             return Err(helpers::sensor_error(
-                "IMU data contains NaN or infinite values".to_string(),
+                ErrorCode::InvalidSensorData,
                 SensorType::IMU,
-                None::<String>
+                None
             ));
         }
 
@@ -259,24 +273,15 @@ impl Ekf {
         state: &StateVector,
         gps_data: &GpsData,
     ) -> AhrsResult<StateVector> {
-        // Input validation
-        if gps_data
-            .position
-            .iter()
-            .any(|v| v.is_nan() || v.is_infinite())
-            || gps_data
-                .velocity
-                .iter()
-                .any(|v| v.is_nan() || v.is_infinite())
-            || gps_data
-                .accuracy
-                .iter()
-                .any(|v| v.is_nan() || v.is_infinite() || *v <= 0.0)
+        // Validate GPS data
+        if gps_data.position.iter().any(|v| v.is_nan() || v.is_infinite()) 
+            || gps_data.velocity.iter().any(|v| v.is_nan() || v.is_infinite())
+            || gps_data.accuracy.iter().any(|v| v.is_nan() || v.is_infinite() || *v <= 0.0)
         {
             return Err(helpers::sensor_error(
-                "GPS data contains invalid values".to_string(),
+                ErrorCode::InvalidSensorData,
                 SensorType::GPS,
-                Some("NaN, infinite, or negative accuracy values detected".to_string()),
+                None
             ));
         }
 
@@ -321,12 +326,12 @@ impl Ekf {
 
         // Position measurement noise
         for i in 0..3 {
-            r[(i, i)] = gps_data.accuracy.x * gps_data.accuracy.x;
+            r[(i, i)] = gps_data.accuracy[0] * gps_data.accuracy[0];
         }
 
         // Velocity measurement noise
         for i in 0..3 {
-            r[(i + 3, i + 3)] = gps_data.accuracy.y * gps_data.accuracy.y;
+            r[(i + 3, i + 3)] = gps_data.accuracy[1] * gps_data.accuracy[1];
         }
 
         // Kalman gain: K = P*H'*(H*P*H' + R)^-1
@@ -337,7 +342,7 @@ impl Ekf {
         let s_inv = match s.try_inverse() {
             Some(inv) => inv,
             None => return Err(helpers::filter_divergence(
-                "Matrix inversion failed during GPS update",
+                ErrorCode::SingularMatrix,
                 FilterType::EKF,
                 None
             )),
@@ -455,17 +460,14 @@ impl Ekf {
         state: &StateVector,
         baro_data: &BaroData,
     ) -> AhrsResult<StateVector> {
-        // Input validation
-        if baro_data.altitude.is_nan()
-            || baro_data.altitude.is_infinite()
-            || baro_data.accuracy.is_nan()
-            || baro_data.accuracy.is_infinite()
-            || baro_data.accuracy <= 0.0
+        // Validate barometer data
+        if baro_data.altitude.is_nan() || baro_data.altitude.is_infinite() 
+            || baro_data.accuracy.is_nan() || baro_data.accuracy.is_infinite() || baro_data.accuracy <= 0.0
         {
             return Err(helpers::sensor_error(
-                "Barometer data contains invalid values".to_string(),
+                ErrorCode::InvalidSensorData,
                 SensorType::Barometer,
-                None::<String>
+                None
             ));
         }
 
@@ -582,8 +584,13 @@ impl Ekf {
         state: &StateVector,
         imu_data: &ImuData,
     ) -> AhrsResult<StateVector> {
-        if imu_data.mag.is_none() {
-            return Ok(state.clone());
+        // Validate magnetometer data
+        if imu_data.mag.is_none() || imu_data.mag.as_ref().unwrap().iter().any(|v| v.is_nan() || v.is_infinite()) {
+            return Err(helpers::sensor_error(
+                ErrorCode::InvalidSensorData,
+                SensorType::Magnetometer,
+                None
+            ));
         }
 
         let mut new_state = state.clone();
@@ -637,7 +644,7 @@ impl Ekf {
         let s_inv = match s.try_inverse() {
             Some(inv) => inv,
             None => return Err(helpers::filter_divergence(
-                "Matrix inversion failed during magnetometer update",
+                ErrorCode::SingularMatrix,
                 FilterType::EKF,
                 None
             )),

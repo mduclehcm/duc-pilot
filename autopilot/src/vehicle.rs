@@ -20,7 +20,7 @@ pub struct Vehicle {
 }
 
 impl Vehicle {
-    pub fn new(board: impl Board) -> Self {
+    pub fn new(_board: impl Board) -> Self {
         Vehicle {
             rc_mapper: RcMapper::new(),
             ..Default::default()
@@ -52,13 +52,13 @@ impl Vehicle {
     pub fn get_mode(&self) -> u8 {
         unimplemented!()
     }
-    pub fn set_mode(&mut self, mode: u8) {
+    pub fn set_mode(&mut self, _mode: u8) {
         unimplemented!()
     }
     pub fn get_armed(&self) -> bool {
         unimplemented!()
     }
-    pub fn set_armed(&mut self, armed: bool) {
+    pub fn set_armed(&mut self, _armed: bool) {
         unimplemented!()
     }
     pub fn update(&mut self, dt: f32) {

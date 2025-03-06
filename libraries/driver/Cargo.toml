@@ -4,11 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-embassy-stm32 = { version = "0.2.0" }
+embassy-stm32 = { version = "0.2.0", features = ["exti"] }
 embassy-time = "0.4.0"
 embassy-futures = "0.1.1"
 heapless = "0.8.0"
 hal = { path = "../hal" }
+embedded-hal-async = "1.0.0"
+num-traits = { version = "0.2", default-features = false }
 
 [features]
 stm32f405rg = ["embassy-stm32/stm32f405rg"]

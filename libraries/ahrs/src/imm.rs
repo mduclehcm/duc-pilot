@@ -1,7 +1,9 @@
+extern crate alloc;
+
 use crate::models::{ModelFilter, create_model_filters, ModelFilterEnum};
 use crate::sensors::{BaroData, GpsData, ImuData};
 use crate::{AhrsConfig, AhrsResult, StateVector};
-use crate::error::helpers;
+use crate::error::{ErrorCode, Component, ConfigParameter, helpers};
 use nalgebra as na;
 
 /// The number of model filters used in the IMM
@@ -125,8 +127,9 @@ impl Imm {
     fn update_mixing_probabilities(&mut self) -> AhrsResult<()> {
         if !self.initialized {
             return Err(helpers::init_error(
-                "IMM filter not initialized".to_string(),
-                Some("update_mixing_probabilities".to_string()),
+                ErrorCode::InvalidStateInitialization,
+                Some(Component::IMM),
+                None
             ));
         }
         
@@ -160,8 +163,9 @@ impl Imm {
     fn mix_states(&mut self) -> AhrsResult<()> {
         if !self.initialized {
             return Err(helpers::init_error(
-                "IMM filter not initialized".to_string(),
-                Some("mix_states".to_string()),
+                ErrorCode::InvalidStateInitialization,
+                Some(Component::IMM),
+                None
             ));
         }
         
@@ -271,7 +275,9 @@ impl Imm {
         Ok(())
     }
     
-    /// Find the model with highest mixing probability for a given target model
+    /// Returns the index of the most likely model for mixing with the target model
+    /// based on the mixing probabilities
+    #[allow(dead_code)]
     fn most_likely_model_for_mixing(&self, target_model: usize) -> usize {
         let mut max_prob = 0.0;
         let mut max_idx = 0;
@@ -291,8 +297,9 @@ impl Imm {
                                 innovation_covariances: &[na::Matrix6<f32>; NUM_MODELS]) -> AhrsResult<()> {
         if !self.initialized {
             return Err(helpers::init_error(
-                "IMM filter not initialized".to_string(),
-                Some("update_model_probabilities".to_string()),
+                ErrorCode::InvalidStateInitialization,
+                Some(Component::IMM),
+                None
             ));
         }
         
@@ -339,8 +346,9 @@ impl Imm {
     pub fn predict(&mut self, imu_data: &ImuData, dt: f32) -> AhrsResult<StateVector> {
         if !self.initialized {
             return Err(helpers::init_error(
-                "IMM filter not initialized".to_string(),
-                Some("predict".to_string()),
+                ErrorCode::InvalidStateInitialization,
+                Some(Component::IMM),
+                None
             ));
         }
         
@@ -363,8 +371,9 @@ impl Imm {
     pub fn update_gps(&mut self, gps_data: &GpsData) -> AhrsResult<StateVector> {
         if !self.initialized {
             return Err(helpers::init_error(
-                "IMM filter not initialized".to_string(),
-                Some("update_gps".to_string()),
+                ErrorCode::InvalidStateInitialization,
+                Some(Component::IMM),
+                None
             ));
         }
         
@@ -394,8 +403,9 @@ impl Imm {
     pub fn update_baro(&mut self, baro_data: &BaroData) -> AhrsResult<StateVector> {
         if !self.initialized {
             return Err(helpers::init_error(
-                "IMM filter not initialized".to_string(),
-                Some("update_baro".to_string()),
+                ErrorCode::InvalidStateInitialization,
+                Some(Component::IMM),
+                None
             ));
         }
         
@@ -567,8 +577,9 @@ impl Imm {
             let sum: f32 = row.iter().sum();
             if (sum - 1.0).abs() > NUMERICAL_STABILITY_THRESHOLD {
                 return Err(helpers::init_error(
-                    format!("Transition matrix row does not sum to 1.0: {}", sum),
-                    Some("set_transition_matrix".to_string()),
+                    ErrorCode::InvalidTransitionMatrix,
+                    Some(Component::IMM),
+                    Some(sum)
                 ));
             }
         }
@@ -584,16 +595,18 @@ impl Imm {
         // Validate matrix dimensions
         if matrix.len() != NUM_MODELS {
             return Err(helpers::init_error(
-                format!("Invalid transition matrix size: expected {} rows", NUM_MODELS),
-                Some("set_transition_matrix_from_slices".to_string()),
+                ErrorCode::InvalidTransitionMatrix,
+                Some(Component::IMM),
+                None
             ));
         }
         
         for row in matrix {
             if row.len() != NUM_MODELS {
                 return Err(helpers::init_error(
-                    format!("Invalid transition matrix size: expected {} columns", NUM_MODELS),
-                    Some("set_transition_matrix_from_slices".to_string()),
+                    ErrorCode::InvalidTransitionMatrix,
+                    Some(Component::IMM),
+                    None
                 ));
             }
         }
@@ -603,8 +616,9 @@ impl Imm {
             let sum: f32 = row.iter().sum();
             if (sum - 1.0).abs() > NUMERICAL_STABILITY_THRESHOLD {
                 return Err(helpers::init_error(
-                    format!("Transition matrix row does not sum to 1.0: {}", sum),
-                    Some("set_transition_matrix_from_slices".to_string()),
+                    ErrorCode::InvalidTransitionMatrix,
+                    Some(Component::IMM),
+                    Some(sum)
                 ));
             }
         }
@@ -624,8 +638,9 @@ impl Imm {
         // Validate min probability
         if min_prob < MIN_ALLOWED_PROBABILITY || min_prob > MAX_ALLOWED_PROBABILITY || min_prob.is_nan() {
             return Err(helpers::config_error(
-                format!("Invalid minimum probability value: {}", min_prob),
-                Some("min_probability".to_string())
+                ErrorCode::InvalidParameter,
+                Some(ConfigParameter::UpdateRate),
+                Some(min_prob)
             ));
         }
         

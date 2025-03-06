@@ -6,7 +6,7 @@ pub struct SitlApp {
 }
 
 impl SitlApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         Self {
             state: State::Initializing,
             flight_axis: FlightAxis::new(),
@@ -36,6 +36,11 @@ impl eframe::App for SitlApp {
             State::Connecting => {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.heading("Connecting to DucPilot SITL");
+                });
+            }
+            State::Connected => {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.heading("Connected to DucPilot SITL");
                 });
             }
             State::Running => {
@@ -99,8 +104,13 @@ impl eframe::App for SitlApp {
 
 enum State {
     Initializing,
+    #[allow(dead_code)]
     Connecting,
+    #[allow(dead_code)]
+    Connected,
     Running,
+    #[allow(dead_code)]
     Stopping,
+    #[allow(dead_code)]
     Stopped,
 }

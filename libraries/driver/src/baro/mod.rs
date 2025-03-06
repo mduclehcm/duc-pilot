@@ -6,8 +6,9 @@
 // 3. Safe access in asynchronous contexts using appropriate guards
 // 4. Interrupt-driven operation where possible
 
-use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
+#[allow(unused_imports)]
+use num_traits::Float;
 
 // Define our own BaroStatus and BaroSensor for this module
 
@@ -60,19 +61,10 @@ pub trait BaroSensor {
 }
 
 // Embassy STM32 dependencies
-use embassy_stm32::i2c::{I2c, Instance as I2cInstance};
-use embassy_stm32::peripherals::I2C1;
-use embassy_stm32::time::Hertz;
-use embassy_stm32::timer::Channel;
-use embassy_stm32::exti::ExtiInput;
-use embassy_stm32::gpio::{Input, Pull, AnyPin};
 
 // Embassy time for async operations
-use embassy_time::{Timer, Duration, Instant};
 
 // Heapless data structures for no_std environment
-use heapless::spsc::Queue;
-use heapless::String;
 
 // Export specific barometer implementations
 pub mod bmp280;
