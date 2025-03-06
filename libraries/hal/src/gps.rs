@@ -15,6 +15,18 @@ pub struct GpsPosition {
     pub satellites: u8,
 }
 
+impl Default for GpsPosition {
+    fn default() -> Self {
+        Self {
+            latitude: 0.0,
+            longitude: 0.0,
+            altitude: 0.0,
+            accuracy: 0.0,
+            satellites: 0,
+        }
+    }
+}
+
 /// GPS velocity data
 #[derive(Debug, Clone, Copy)]
 pub struct GpsVelocity {
@@ -26,6 +38,17 @@ pub struct GpsVelocity {
     pub vertical: f32,
     /// Velocity accuracy estimate in meters per second
     pub accuracy: f32,
+}
+
+impl Default for GpsVelocity {
+    fn default() -> Self {
+        Self {
+            speed: 0.0,
+            course: 0.0,
+            vertical: 0.0,
+            accuracy: 0.0,
+        }
+    }
 }
 
 /// GPS time data
@@ -47,6 +70,21 @@ pub struct GpsTime {
     pub millisecond: u16,
     /// Whether time is valid and synchronized
     pub valid: bool,
+}
+
+impl Default for GpsTime {
+    fn default() -> Self {
+        Self {
+            year: 0,
+            month: 0,
+            day: 0,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            millisecond: 0,
+            valid: false,
+        }
+    }
 }
 
 /// GPS interface
@@ -133,6 +171,26 @@ pub struct SatelliteInfo {
     pub in_use: bool,
 }
 
+impl Default for SatelliteInfo {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            signal_strength: 0.0,
+            elevation: 0.0,
+            azimuth: 0.0,
+            in_use: false,
+        }
+    }
+}
+
+// Make SatelliteInfo Copy to fix array initialization
+impl Copy for SatelliteInfo {}
+impl Clone for SatelliteInfo {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
 /// GNSS constellation configuration
 #[derive(Debug, Clone, Copy)]
 pub struct GnssConfig {
@@ -174,7 +232,28 @@ pub struct GpsStatus {
     
     /// Time since last fix in milliseconds
     pub time_since_fix_ms: u32,
+
+    /// Whether the GPS has a valid fix
+    pub has_fix: bool,
 }
+
+impl Default for GpsStatus {
+    fn default() -> Self {
+        Self {
+            healthy: false,
+            fix_type: GpsFixType::NoFix,
+            satellites_used: 0,
+            satellites_visible: 0,
+            hdop: 0.0,
+            vdop: 0.0,
+            sbas_active: false,
+            time_since_fix_ms: 0,
+            has_fix: false,
+        }
+    }
+}
+
+impl Copy for GpsStatus {}
 
 /// GPS fix types
 #[derive(Debug, Copy, Clone, PartialEq)]

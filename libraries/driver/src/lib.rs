@@ -1,7 +1,9 @@
 #![no_std]
 
 mod ublox;
+mod imu;
+pub mod baro;
 
-// Export GPS driver types
-pub use ublox::GpsData;
-pub use ublox::UbloxGps;
+pub use ublox::*;
+pub use baro::*;
+pub use imu::*;

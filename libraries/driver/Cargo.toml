@@ -4,12 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-embassy-stm32 = "0.2.0"
+embassy-stm32 = { version = "0.2.0" }
 embassy-time = "0.4.0"
 embassy-futures = "0.1.1"
 heapless = "0.8.0"
 hal = { path = "../hal" }
 
 [features]
-default = []
-stm32 = ["embassy-stm32", "embassy-time", "embassy-futures"]
+stm32f405rg = ["embassy-stm32/stm32f405rg"]
+stm32h743vi = ["embassy-stm32/stm32h743vi"]
+
+default = ["stm32h743vi"]
